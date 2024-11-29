@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"sync"
 
+	libthrift "github.com/apache/thrift/lib/go/thrift"
 	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 	"github.com/joechenrh/arrow-go/v18/parquet"
 	"github.com/joechenrh/arrow-go/v18/parquet/compress"
@@ -29,7 +30,6 @@ import (
 	"github.com/joechenrh/arrow-go/v18/parquet/internal/thrift"
 	"github.com/joechenrh/arrow-go/v18/parquet/internal/utils"
 	"github.com/joechenrh/arrow-go/v18/parquet/metadata"
-	libthrift "github.com/joechenrh/thrift/lib/go/thrift"
 	"golang.org/x/xerrors"
 )
 

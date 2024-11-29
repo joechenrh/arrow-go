@@ -27,6 +27,7 @@ import (
 	"path"
 	"testing"
 
+	libthrift "github.com/apache/thrift/lib/go/thrift"
 	"github.com/joechenrh/arrow-go/v18/arrow"
 	"github.com/joechenrh/arrow-go/v18/arrow/array"
 	"github.com/joechenrh/arrow-go/v18/arrow/memory"
@@ -40,7 +41,6 @@ import (
 	"github.com/joechenrh/arrow-go/v18/parquet/metadata"
 	"github.com/joechenrh/arrow-go/v18/parquet/pqarrow"
 	"github.com/joechenrh/arrow-go/v18/parquet/schema"
-	libthrift "github.com/joechenrh/thrift/lib/go/thrift"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"

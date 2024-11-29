@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/apache/arrow-go/v18/arrow/decimal"
-	"github.com/apache/arrow-go/v18/arrow/internal/debug"
-	"github.com/apache/arrow-go/v18/internal/json"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/debug"
+	"github.com/joechenrh/arrow-go/v18/internal/json"
 	"golang.org/x/xerrors"
 )
 

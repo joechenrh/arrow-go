@@ -19,9 +19,9 @@ package encoding
 import (
 	"fmt"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/internal/bitutils"
-	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/internal/bitutils"
+	"github.com/joechenrh/arrow-go/v18/parquet"
 )
 
 // PlainFixedLenByteArrayEncoder writes the raw bytes of the byte array

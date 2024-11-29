@@ -23,13 +23,13 @@ import (
 	"io"
 	"time"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/bitutil"
-	"github.com/apache/arrow-go/v18/arrow/compute/exec"
-	"github.com/apache/arrow-go/v18/arrow/compute/internal/kernels"
-	"github.com/apache/arrow-go/v18/arrow/internal/debug"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/internal/utils"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/bitutil"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/exec"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/internal/kernels"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/debug"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/internal/utils"
 	"golang.org/x/xerrors"
 )
 

@@ -19,7 +19,7 @@ package memory_test
 import (
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/assert"
 )
 

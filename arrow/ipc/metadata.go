@@ -23,12 +23,12 @@ import (
 	"io"
 	"sort"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/endian"
-	"github.com/apache/arrow-go/v18/arrow/internal/dictutils"
-	"github.com/apache/arrow-go/v18/arrow/internal/flatbuf"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/endian"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/dictutils"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/flatbuf"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 )
 
 // Magic string identifying an Apache Arrow file.

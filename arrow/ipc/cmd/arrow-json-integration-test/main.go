@@ -22,10 +22,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/arrio"
-	"github.com/apache/arrow-go/v18/arrow/internal/arrjson"
-	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/arrio"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/arrjson"
+	"github.com/joechenrh/arrow-go/v18/arrow/ipc"
 )
 
 func main() {

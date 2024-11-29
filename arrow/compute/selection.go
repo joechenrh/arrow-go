@@ -22,10 +22,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/compute/exec"
-	"github.com/apache/arrow-go/v18/arrow/compute/internal/kernels"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/exec"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/internal/kernels"
 	"golang.org/x/sync/errgroup"
 )
 

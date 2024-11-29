@@ -22,8 +22,8 @@ import (
 	"runtime/cgo"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
 )
 
 // #include <stdlib.h>
@@ -43,7 +43,7 @@ import (
 // extern void asyncProducerRequest(struct ArrowAsyncProducer*, int64_t);
 // extern void asyncProducerCancel(struct ArrowAsyncProducer*);
 // extern int asyncTaskExtract(struct ArrowAsyncTask*, struct ArrowDeviceArray*);
-// // XXX(https://github.com/apache/arrow-adbc/issues/729)
+// // XXX(https://github.com/joechenrh/arrow-adbc/issues/729)
 // int streamGetSchemaTrampoline(struct ArrowArrayStream* stream, struct ArrowSchema* out);
 // int streamGetNextTrampoline(struct ArrowArrayStream* stream, struct ArrowArray* out);
 // int asyncTaskExtractTrampoline(struct ArrowAsyncTask* task, struct ArrowDeviceArray* out);

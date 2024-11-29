@@ -20,8 +20,8 @@ import (
 	"reflect"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow/decimal"
-	"github.com/apache/arrow-go/v18/arrow/float16"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal"
+	"github.com/joechenrh/arrow-go/v18/arrow/float16"
 	"golang.org/x/exp/constraints"
 )
 

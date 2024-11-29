@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-	thrift "github.com/apache/thrift/lib/go/thrift"
+	thrift "github.com/joechenrh/thrift/lib/go/thrift"
 	"strings"
 	"regexp"
 )

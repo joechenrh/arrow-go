@@ -21,13 +21,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/extensions"
-	"github.com/apache/arrow-go/v18/arrow/internal/dictutils"
-	"github.com/apache/arrow-go/v18/arrow/internal/flatbuf"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/extensions"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/dictutils"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/flatbuf"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/assert"
 )
 

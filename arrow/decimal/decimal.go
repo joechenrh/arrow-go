@@ -24,9 +24,9 @@ import (
 	"math/bits"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/apache/arrow-go/v18/arrow/decimal256"
-	"github.com/apache/arrow-go/v18/arrow/internal/debug"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal128"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal256"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/debug"
 )
 
 // DecimalTypes is a generic constraint representing the implemented decimal types

@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/apache/arrow-go/v18/parquet/file"
-	"github.com/apache/arrow-go/v18/parquet/schema"
 	"github.com/docopt/docopt-go"
+	"github.com/joechenrh/arrow-go/v18/parquet/file"
+	"github.com/joechenrh/arrow-go/v18/parquet/schema"
 )
 
 const usage = `Parquet Schema Dumper.

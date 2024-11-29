@@ -23,10 +23,10 @@ import (
 	"path"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/file"
-	"github.com/apache/arrow-go/v18/parquet/internal/encryption"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/file"
+	"github.com/joechenrh/arrow-go/v18/parquet/internal/encryption"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -45,7 +45,7 @@ import (
  *
  * A detailed description of the Parquet Modular Encryption specification can be found
  * here:
- * https://github.com/apache/parquet-format/blob/encryption/Encryption.md
+ * https://github.com/joechenrh/parquet-format/blob/encryption/Encryption.md
  *
  * The following decryption configurations are used to decrypt each parquet file:
  *

@@ -27,7 +27,7 @@
 // or "String Logical Type".
 //
 // For more information about Logical and Converted Types, check:
-// https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
+// https://github.com/joechenrh/parquet-format/blob/master/LogicalTypes.md
 package schema
 
 import (
@@ -35,8 +35,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/apache/arrow-go/v18/parquet"
-	format "github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	format "github.com/joechenrh/arrow-go/v18/parquet/internal/gen-go/parquet"
 	"golang.org/x/xerrors"
 )
 

@@ -22,15 +22,15 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/float16"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/internal/bitutils"
-	shared_utils "github.com/apache/arrow-go/v18/internal/utils"
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/internal/encoding"
-	"github.com/apache/arrow-go/v18/parquet/schema"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/float16"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/internal/bitutils"
+	shared_utils "github.com/joechenrh/arrow-go/v18/internal/utils"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/internal/encoding"
+	"github.com/joechenrh/arrow-go/v18/parquet/schema"
 )
 
 type minmaxPairInt32 [2]int32

@@ -22,14 +22,14 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/file"
-	"github.com/apache/arrow-go/v18/parquet/metadata"
-	"github.com/apache/arrow-go/v18/parquet/schema"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal128"
+	"github.com/joechenrh/arrow-go/v18/arrow/flight"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/file"
+	"github.com/joechenrh/arrow-go/v18/parquet/metadata"
+	"github.com/joechenrh/arrow-go/v18/parquet/schema"
 	"golang.org/x/xerrors"
 )
 
@@ -434,7 +434,7 @@ func arrowTimestamp(logical schema.TimestampLogicalType) (arrow.DataType, error)
 	tz := ""
 
 	// ConvertedTypes are adjusted to UTC per backward compatibility guidelines
-	// https://github.com/apache/parquet-format/blob/eb4b31c1d64a01088d02a2f9aefc6c17c54cc6fc/LogicalTypes.md?plain=1#L480-L485
+	// https://github.com/joechenrh/parquet-format/blob/eb4b31c1d64a01088d02a2f9aefc6c17c54cc6fc/LogicalTypes.md?plain=1#L480-L485
 	if logical.IsAdjustedToUTC() || logical.IsFromConvertedType() {
 		tz = "UTC"
 	}

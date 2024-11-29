@@ -27,20 +27,20 @@ import (
 	"path"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/internal/utils"
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
-	"github.com/apache/arrow-go/v18/parquet/file"
-	"github.com/apache/arrow-go/v18/parquet/internal/encoding"
-	format "github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet"
-	"github.com/apache/arrow-go/v18/parquet/internal/thrift"
-	"github.com/apache/arrow-go/v18/parquet/metadata"
-	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	"github.com/apache/arrow-go/v18/parquet/schema"
-	libthrift "github.com/apache/thrift/lib/go/thrift"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/internal/utils"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/compress"
+	"github.com/joechenrh/arrow-go/v18/parquet/file"
+	"github.com/joechenrh/arrow-go/v18/parquet/internal/encoding"
+	format "github.com/joechenrh/arrow-go/v18/parquet/internal/gen-go/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/internal/thrift"
+	"github.com/joechenrh/arrow-go/v18/parquet/metadata"
+	"github.com/joechenrh/arrow-go/v18/parquet/pqarrow"
+	"github.com/joechenrh/arrow-go/v18/parquet/schema"
+	libthrift "github.com/joechenrh/thrift/lib/go/thrift"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -578,7 +578,7 @@ func TestByteStreamSplitEncodingFileRead(t *testing.T) {
 	}
 
 	// Test conformance against Parquet reference
-	// Expected structure: https://github.com/apache/parquet-testing/blob/1bf4bd39df2135d132451c281754268f03dc1c0e/data/README.md?plain=1#L358
+	// Expected structure: https://github.com/joechenrh/parquet-testing/blob/1bf4bd39df2135d132451c281754268f03dc1c0e/data/README.md?plain=1#L358
 	for i, tc := range []struct {
 		PhysicalType parquet.Type
 		LogicalType  schema.LogicalType
@@ -695,7 +695,7 @@ func TestDeltaBinaryPackedMultipleBatches(t *testing.T) {
 }
 
 // Test read file lz4_raw_compressed.parquet
-// Contents documented at https://github.com/apache/parquet-testing/commit/ddd898958803cb89b7156c6350584d1cda0fe8de
+// Contents documented at https://github.com/joechenrh/parquet-testing/commit/ddd898958803cb89b7156c6350584d1cda0fe8de
 func TestLZ4RawFileRead(t *testing.T) {
 	dir := os.Getenv("PARQUET_TEST_DATA")
 	if dir == "" {
@@ -778,7 +778,7 @@ func TestLZ4RawFileRead(t *testing.T) {
 }
 
 // Test read file lz4_raw_compressed_larger.parquet
-// Contents documented at https://github.com/apache/parquet-testing/commit/ddd898958803cb89b7156c6350584d1cda0fe8de
+// Contents documented at https://github.com/joechenrh/parquet-testing/commit/ddd898958803cb89b7156c6350584d1cda0fe8de
 func TestLZ4RawLargerFileRead(t *testing.T) {
 	dir := os.Getenv("PARQUET_TEST_DATA")
 	if dir == "" {

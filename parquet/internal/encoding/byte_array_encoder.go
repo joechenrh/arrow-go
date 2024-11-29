@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/internal/bitutils"
-	"github.com/apache/arrow-go/v18/internal/utils"
-	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/internal/bitutils"
+	"github.com/joechenrh/arrow-go/v18/internal/utils"
+	"github.com/joechenrh/arrow-go/v18/parquet"
 )
 
 // PlainByteArrayEncoder encodes byte arrays according to the spec for Plain encoding

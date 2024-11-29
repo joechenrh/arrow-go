@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/google/uuid"
+	"github.com/joechenrh/arrow-go/v18/arrow/flight"
 )
 
 const StatefulSessionCookieName string = "arrow_flight_session_id"

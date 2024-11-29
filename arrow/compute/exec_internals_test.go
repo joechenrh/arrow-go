@@ -24,13 +24,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/bitutil"
-	"github.com/apache/arrow-go/v18/arrow/compute/exec"
-	"github.com/apache/arrow-go/v18/arrow/internal/testing/gen"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/arrow/scalar"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/bitutil"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/exec"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/testing/gen"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/arrow/scalar"
 	"github.com/stretchr/testify/suite"
 )
 

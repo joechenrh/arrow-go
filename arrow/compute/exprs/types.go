@@ -24,8 +24,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/compute"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute"
 	"github.com/substrait-io/substrait-go/expr"
 	"github.com/substrait-io/substrait-go/extensions"
 	"github.com/substrait-io/substrait-go/types"
@@ -33,7 +33,7 @@ import (
 
 const (
 	// URI for official Arrow Substrait Extension Types
-	ArrowExtTypesUri          = "https://github.com/apache/arrow/blob/main/format/substrait/extension_types.yaml"
+	ArrowExtTypesUri          = "https://github.com/joechenrh/arrow/blob/main/format/substrait/extension_types.yaml"
 	SubstraitDefaultURIPrefix = extensions.SubstraitDefaultURIPrefix
 	// URI for official Substrait Arithmetic funcs extensions
 	SubstraitArithmeticFuncsURI = SubstraitDefaultURIPrefix + "functions_arithmetic.yaml"

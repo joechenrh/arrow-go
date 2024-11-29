@@ -23,10 +23,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
-	"github.com/apache/arrow-go/v18/parquet/file"
-	"github.com/apache/arrow-go/v18/parquet/schema"
+	"github.com/joechenrh/arrow-go/v18/parquet"
+	"github.com/joechenrh/arrow-go/v18/parquet/compress"
+	"github.com/joechenrh/arrow-go/v18/parquet/file"
+	"github.com/joechenrh/arrow-go/v18/parquet/schema"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -38,7 +38,7 @@ import (
  *
  * A detailed description of the Parquet Modular Encryption specification can be found
  * here:
- * https://github.com/apache/parquet-format/blob/encryption/Encryption.md
+ * https://github.com/joechenrh/parquet-format/blob/encryption/Encryption.md
  *
  * Each unit-test creates a single parquet file with eight columns using one of the
  * following encryption configurations:

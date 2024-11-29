@@ -22,9 +22,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/compute/exec"
-	"github.com/apache/arrow-go/v18/arrow/internal/debug"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/compute/exec"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/debug"
 )
 
 func haveChunkedArray(values []Datum) bool {

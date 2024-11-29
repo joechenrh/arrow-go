@@ -36,12 +36,12 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/apache/arrow-go/v18/arrow/internal/arrdata"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/arrow/memory/mallocator"
+	"github.com/joechenrh/arrow-go/v18/arrow"
+	"github.com/joechenrh/arrow-go/v18/arrow/array"
+	"github.com/joechenrh/arrow-go/v18/arrow/decimal128"
+	"github.com/joechenrh/arrow-go/v18/arrow/internal/arrdata"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
+	"github.com/joechenrh/arrow-go/v18/arrow/memory/mallocator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1029,7 +1029,7 @@ func TestRecordReaderImportError(t *testing.T) {
 }
 
 func TestConfuseGoGc(t *testing.T) {
-	// Regression test for https://github.com/apache/arrow-adbc/issues/729
+	// Regression test for https://github.com/joechenrh/arrow-adbc/issues/729
 	reclist := arrdata.Records["primitives"]
 
 	var wg sync.WaitGroup

@@ -49,7 +49,7 @@ type Reader struct {
 	metadata      *metadata.FileMetaData
 	fileDecryptor encryption.FileDecryptor
 
-	bufferPool sync.Pool
+	bufferPool *sync.Pool
 }
 
 type ReadOption func(*Reader)
@@ -59,6 +59,12 @@ type ReadOption func(*Reader)
 func WithReadProps(props *parquet.ReaderProperties) ReadOption {
 	return func(r *Reader) {
 		r.props = props
+	}
+}
+
+func WithBufferPool(pool *sync.Pool) ReadOption {
+	return func(r *Reader) {
+		r.bufferPool = pool
 	}
 }
 
@@ -108,14 +114,16 @@ func NewParquetReader(r parquet.ReaderAtSeeker, opts ...ReadOption) (*Reader, er
 		f.props = parquet.NewReaderProperties(memory.NewGoAllocator())
 	}
 
-	f.bufferPool = sync.Pool{
-		New: func() interface{} {
-			buf := memory.NewResizableBuffer(f.props.Allocator())
-			runtime.SetFinalizer(buf, func(obj *memory.Buffer) {
-				obj.Release()
-			})
-			return buf
-		},
+	if f.bufferPool == nil {
+		f.bufferPool = &sync.Pool{
+			New: func() interface{} {
+				buf := memory.NewResizableBuffer(f.props.Allocator())
+				runtime.SetFinalizer(buf, func(obj *memory.Buffer) {
+					obj.Release()
+				})
+				return buf
+			},
+		}
 	}
 
 	if f.metadata == nil {
@@ -130,7 +138,7 @@ func NewParquetReader(r parquet.ReaderAtSeeker, opts ...ReadOption) (*Reader, er
 // on top of the Reader and constructs their own ColumnReaders (like the
 // RecordReader)
 func (f *Reader) BufferPool() *sync.Pool {
-	return &f.bufferPool
+	return f.bufferPool
 }
 
 // Close will close the current reader, and if the underlying reader being used
@@ -309,6 +317,6 @@ func (f *Reader) RowGroup(i int) *RowGroupReader {
 		props:         f.props,
 		r:             f.r,
 		fileDecryptor: f.fileDecryptor,
-		bufferPool:    &f.bufferPool,
+		bufferPool:    f.bufferPool,
 	}
 }

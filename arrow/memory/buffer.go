@@ -112,7 +112,9 @@ func (b *Buffer) Mutable() bool { return b.mutable }
 func (b *Buffer) Len() int { return b.length }
 
 // Cap returns the capacity of the buffer.
-func (b *Buffer) Cap() int { return len(b.buf) }
+func (b *Buffer) Cap() int {
+	return len(b.buf)
+}
 
 // Reserve reserves the provided amount of capacity for the buffer.
 func (b *Buffer) Reserve(capacity int) {

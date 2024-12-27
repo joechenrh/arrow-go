@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 )
 
 // bufferedReader is similar to bufio.Reader except
@@ -32,6 +34,8 @@ type bufferedReader struct {
 	r, w     int
 	rd       io.Reader
 	err      error
+
+	mem memory.Allocator
 }
 
 // NewBufferedReader returns a buffered reader with similar semantics to bufio.Reader
@@ -46,19 +50,39 @@ func NewBufferedReader(rd io.Reader, sz int) *bufferedReader {
 	}
 
 	r := &bufferedReader{
-		rd: rd,
+		rd:  rd,
+		mem: memory.DefaultAllocator,
+	}
+	r.resizeBuffer(sz)
+	return r
+}
+func NewBufferedReaderWithMem(rd io.Reader, sz int, mem memory.Allocator) *bufferedReader {
+	if mem == nil {
+		mem = memory.DefaultAllocator
+	}
+
+	r := &bufferedReader{
+		rd:  rd,
+		mem: mem,
 	}
 	r.resizeBuffer(sz)
 	return r
 }
 
+func (b *bufferedReader) Release() {
+	if b.mem != nil && b.buf != nil {
+		b.mem.Free(b.buf)
+	}
+}
+
 func (b *bufferedReader) resetBuffer() {
 	if b.buf == nil {
-		b.buf = make([]byte, b.bufferSz)
-	} else if b.bufferSz > cap(b.buf) {
-		buf := b.buf
-		b.buf = make([]byte, b.bufferSz)
-		copy(b.buf, buf)
+		b.buf = b.mem.Allocate(b.bufferSz)[:b.bufferSz]
+	} else if b.bufferSz > len(b.buf) {
+		newBuf := b.mem.Allocate(b.bufferSz)[:b.bufferSz]
+		copy(newBuf, b.buf)
+		b.mem.Free(b.buf)
+		b.buf = newBuf
 	} else {
 		b.buf = b.buf[:b.bufferSz]
 	}

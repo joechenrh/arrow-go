@@ -377,6 +377,9 @@ func (p *serializedPageReader) Reset(r parquet.BufferedReader, nrows int64, comp
 }
 
 func (p *serializedPageReader) Release() {
+	if p.r != nil {
+		p.r.Release()
+	}
 	if p.mem != nil {
 		for _, b := range p.dictBuffers {
 			p.mem.Free(b)

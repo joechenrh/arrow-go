@@ -37,8 +37,8 @@ func roundUp(n, sz int) int {
 	return (((n - 1) / sz) + 1) * sz
 }
 
-// The smallest block size is 1MB
-const LeafSize = 1 << 20
+// The smallest block size is 256KB
+const LeafSize = 256 << 10
 
 // Compute block size at layer l
 func BlkSize(l int) int {
@@ -160,10 +160,13 @@ type BuddyAllocator struct {
 	allocatedBytes      atomic.Int64
 	allocatedOutside    atomic.Int64
 	allocatedOutsideNum atomic.Int64
+
+	unavailable int
+	total       int
 }
 
 // Allocate nbytes, but malloc won't return anything smaller than LeafSize
-func (b *BuddyAllocator) allocateInternal(nbytes int) ([]byte, int) {
+func (b *BuddyAllocator) allocateInternal(nbytes int) []byte {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -178,7 +181,7 @@ func (b *BuddyAllocator) allocateInternal(nbytes int) ([]byte, int) {
 
 	// No free blocks, allocation failed
 	if l == b.nLayers {
-		return nil, -1
+		return nil
 	}
 
 	// Found a block, pop it and potentially split it.
@@ -195,7 +198,13 @@ func (b *BuddyAllocator) allocateInternal(nbytes int) ([]byte, int) {
 		b.bufInfo[l-1].push(qa)
 	}
 
-	return b.buffer[offset : offset+BlkSize(l)], offset
+	buf := b.buffer[offset : offset+BlkSize(l)]
+	b.allocatedBytes.Add(int64(BlkSize(l)))
+	b.allocated[UnsafeGetBlkAddr(buf)] = offset
+
+	b.sanityCheck()
+
+	return buf
 }
 
 // Find the layer of the block at offset
@@ -209,12 +218,23 @@ func (b *BuddyAllocator) layer(offset int) int {
 }
 
 // free memory marked by p, which was earlier allocated using Malloc
-func (b *BuddyAllocator) freeInternal(offset int) {
+func (b *BuddyAllocator) freeInternal(bs []byte) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	// Start merge from layer l
+	bs = bs[:1]
+	addr := UnsafeGetBlkAddr(bs)
+	offset, ok := b.allocated[addr]
+	if !ok {
+		return
+	}
+
 	l := b.layer(offset)
+
+	b.allocatedBytes.Add(-int64(BlkSize(l)))
+	delete(b.allocated, addr)
+
+	// Start merge from layer l
 	for ; l < b.maxLayer; l++ {
 		// Find the buddy index at layer l
 		bi := BlkIndex(l, offset)
@@ -246,6 +266,8 @@ func (b *BuddyAllocator) freeInternal(offset int) {
 
 	// Add the final merged buffer to free list.
 	b.bufInfo[l].push(offset)
+
+	b.sanityCheck()
 }
 
 /*
@@ -363,6 +385,8 @@ func (b *BuddyAllocator) Init(totalSize int) {
 	unavailable := b.markUnavailable(totalSize)
 	// initialize free lists for each size k
 	free := b.initFree(0, BlkSize(b.maxLayer)-unavailable)
+	b.unavailable = unavailable
+	b.total = BlkSize(b.maxLayer)
 
 	// check if the amount that is free is what we expect
 	if free != BlkSize(b.maxLayer)-unavailable {
@@ -371,6 +395,8 @@ func (b *BuddyAllocator) Init(totalSize int) {
 
 	b.allocated = make(map[uintptr]int, totalSize/LeafSize)
 
+	b.sanityCheck()
+
 	go func() {
 		tick := time.NewTicker(5 * time.Second)
 		for {
@@ -378,7 +404,7 @@ func (b *BuddyAllocator) Init(totalSize int) {
 			case <-tick.C:
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
-				fmt.Printf("[BuddyAllocator] Inside the allocator: %d/%d MiB. Outside the allocator: %d/%d MiB\n",
+				fmt.Printf("[BuddyAllocator] Inside the allocator: %d MiB(%d blocks), outside the allocator: %d MiB(%d blocks)\n",
 					int(b.allocatedBytes.Load())/1024/1024, len(b.allocated),
 					int(b.allocatedOutsideNum.Load()), int(b.allocatedOutside.Load())/1024/1024,
 				)
@@ -387,32 +413,45 @@ func (b *BuddyAllocator) Init(totalSize int) {
 	}()
 }
 
-func (b *BuddyAllocator) Allocate(size int) []byte {
-	buf, offset := b.allocateInternal(size)
-	if buf == nil {
-		b.allocatedOutside.Add(int64(size))
-		b.allocatedOutsideNum.Add(1)
-		return make([]byte, size)
+func (b *BuddyAllocator) sanityCheck() {
+	free := 0
+	for _, binfo := range b.bufInfo {
+		blkSize := BlkSize(binfo.l)
+		for bi := range binfo.canAllocate {
+			if binfo.canAllocate[bi] {
+				free += blkSize
+			}
+		}
 	}
 
-	b.allocated[UnsafeGetBlkAddr(buf)] = offset
-	b.allocatedBytes.Add(int64(BlkSize(b.layer(offset))))
-	return buf
+	alloc := 0
+	for _, offset := range b.allocated {
+		alloc += BlkSize(b.layer(offset))
+	}
+	if alloc != int(b.allocatedBytes.Load()) {
+		panic("Error")
+	}
+
+	if free+int(b.allocatedBytes.Load())+b.unavailable != b.total {
+		panic("Error")
+	}
+}
+
+func (b *BuddyAllocator) Allocate(size int) []byte {
+	if buf := b.allocateInternal(size); buf != nil {
+		return buf
+	}
+
+	b.allocatedOutside.Add(int64(size))
+	b.allocatedOutsideNum.Add(1)
+	return make([]byte, size)
 }
 
 func (b *BuddyAllocator) Free(bs []byte) {
 	if bs == nil || cap(bs) == 0 {
 		return
 	}
-	bs = bs[:1]
-	addr := UnsafeGetBlkAddr(bs)
-	if offset, ok := b.allocated[addr]; ok {
-		b.allocatedBytes.Add(-int64(BlkSize(b.layer(offset))))
-		if offset >= 0 {
-			b.freeInternal(offset)
-		}
-		delete(b.allocated, addr)
-	}
+	b.freeInternal(bs)
 }
 
 func (b *BuddyAllocator) Reallocate(size int, bs []byte) []byte {

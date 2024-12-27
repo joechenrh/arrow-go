@@ -50,6 +50,7 @@ type ReaderProperties struct {
 type BufferedReader interface {
 	Peek(int) ([]byte, error)
 	Discard(int) (int, error)
+	Release()
 	io.Reader
 }
 
@@ -72,7 +73,7 @@ func (r *ReaderProperties) Allocator() memory.Allocator { return r.alloc }
 // into a buffer in memory and return a bytes.NewReader for that buffer.
 func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (BufferedReader, error) {
 	if r.BufferedStreamEnabled {
-		return utils.NewBufferedReader(io.NewSectionReader(source, start, nbytes), int(r.BufferSize)), nil
+		return utils.NewBufferedReaderWithMem(io.NewSectionReader(source, start, nbytes), int(r.BufferSize), r.alloc), nil
 	}
 
 	data := make([]byte, nbytes)
@@ -84,5 +85,5 @@ func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (B
 		return nil, fmt.Errorf("parquet: tried reading %d bytes starting at position %d from file but only got %d", nbytes, start, n)
 	}
 
-	return utils.NewBufferedReader(bytes.NewReader(data), int(nbytes)), nil
+	return utils.NewBufferedReaderWithMem(bytes.NewReader(data), int(nbytes), r.alloc), nil
 }

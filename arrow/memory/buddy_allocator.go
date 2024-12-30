@@ -392,7 +392,7 @@ func (b *internalAllocator) init(totalSize int) {
 
 	// check if the amount that is free is what we expect
 	if free != BlkSize(b.maxLayer)-unavailable {
-		panic("bd_init: free mem")
+		panic("Initialize allocator failed")
 	}
 
 	b.allocated = make(map[uintptr]int, totalSize/leafSize)
@@ -416,11 +416,11 @@ func (b *internalAllocator) sanityCheck() {
 		alloc += BlkSize(b.layer(offset))
 	}
 	if alloc != int(b.allocatedBytes.Load()) {
-		panic("Error")
+		panic("Sanity check failed")
 	}
 
 	if free+int(b.allocatedBytes.Load())+b.unavailable != b.total {
-		panic("Error")
+		panic("Sanity check failed")
 	}
 }
 

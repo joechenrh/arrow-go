@@ -28,8 +28,49 @@ import (
 	"unsafe"
 )
 
-var maxArenaCount = 3
-var arenaDefaultSize = 2 << 30
+var (
+	maxArenaCount    = 3       // maximum arena count
+	arenaDefaultSize = 1 << 30 // size of each arena
+)
+
+// arenaPool is used to cache and reuse arenas
+type arenaPool struct {
+	arenas    chan *internalAllocator
+	allocated int
+	lock      sync.Mutex
+}
+
+func (ap *arenaPool) get() *internalAllocator {
+	// First try to get cached arena
+	select {
+	case a := <-ap.arenas:
+		return a
+	default:
+	}
+
+	ap.lock.Lock()
+	defer ap.lock.Unlock()
+
+	// Create a new one and return
+	if ap.allocated < maxArenaCount {
+		ap.allocated++
+		bd := &internalAllocator{}
+		bd.init(arenaDefaultSize)
+		return bd
+	}
+
+	// We can't create new arena, return nil
+	return nil
+}
+
+func (ap *arenaPool) put(a *internalAllocator) {
+	ap.arenas <- a
+}
+
+var pool = &arenaPool{
+	allocated: 0,
+	arenas:    make(chan *internalAllocator, 256),
+}
 
 // The smallest block size is 256KB
 const leafSize = 256 << 10
@@ -463,13 +504,12 @@ func (b *BuddyAllocator) Allocate(size int) []byte {
 	}
 
 	if len(b.arenas) < maxArenaCount {
-		arena := &internalAllocator{}
-		arena.init(arenaDefaultSize)
-		b.arenas = append(b.arenas, arena)
-
-		buf := arena.allocateInternal(size)
-		b.allocated[UnsafeGetBlkAddr(buf)] = len(b.arenas) - 1
-		return buf
+		if arena := pool.get(); arena != nil {
+			b.arenas = append(b.arenas, arena)
+			buf := arena.allocateInternal(size)
+			b.allocated[UnsafeGetBlkAddr(buf)] = len(b.arenas) - 1
+			return buf
+		}
 	}
 
 	b.allocatedOutside.Add(int64(size))
@@ -508,4 +548,11 @@ func (b *BuddyAllocator) Allocated() int64 {
 		allocatedBytes += int(arena.allocatedBytes.Load())
 	}
 	return int64(allocatedBytes)
+}
+
+// Close return the allocated memory to the pool
+func (b *BuddyAllocator) Close() {
+	for _, arena := range b.arenas {
+		pool.put(arena)
+	}
 }

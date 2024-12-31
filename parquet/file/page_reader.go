@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"runtime"
 	"sync"
 
 	"github.com/JohnCGriffin/overflow"
@@ -344,11 +343,6 @@ func NewPageReader(r parquet.BufferedReader, nrows int64, compressType compress.
 		mem:               mem,
 		codec:             codec,
 	}
-	runtime.SetFinalizer(rdr, func(obj *serializedPageReader) {
-		for _, b := range rdr.dictBuffers {
-			rdr.mem.Free(b)
-		}
-	})
 
 	if ctx != nil {
 		rdr.cryptoCtx = *ctx
@@ -384,6 +378,7 @@ func (p *serializedPageReader) Release() {
 		for _, b := range p.dictBuffers {
 			p.mem.Free(b)
 		}
+		p.dictBuffers = nil
 	}
 }
 
@@ -523,7 +518,6 @@ func (p *serializedPageReader) Next() bool {
 		}
 
 		pageBuf := p.mem.Allocate(lenUncompressed)
-		pageBuf = pageBuf[:lenUncompressed]
 
 		switch p.curPageHdr.GetType() {
 		case format.PageType_DICTIONARY_PAGE:

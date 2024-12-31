@@ -74,7 +74,9 @@ func (ap *arenaPool) free() {
 
 	ap.allocated = 0
 	for len(ap.arenas) > 0 {
-		<-ap.arenas
+		a := <-ap.arenas
+		a.bufInfo = nil
+		a.buffer = nil
 	}
 	runtime.GC()
 }
@@ -268,7 +270,7 @@ func (b *internalAllocator) allocateInternal(nbytes int) []byte {
 		b.bufInfo[l-1].push(qa)
 	}
 
-	buf := b.buffer[offset : offset+BlkSize(l)]
+	buf := b.buffer[offset : offset+nbytes]
 	b.allocatedBytes.Add(int64(BlkSize(l)))
 	b.allocated[UnsafeGetBlkAddr(buf)] = offset
 

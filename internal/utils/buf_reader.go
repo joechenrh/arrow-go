@@ -70,16 +70,17 @@ func NewBufferedReaderWithMem(rd io.Reader, sz int, mem memory.Allocator) *buffe
 }
 
 func (b *bufferedReader) Release() {
-	if b.mem != nil && b.buf != nil {
+	if b.buf != nil {
 		b.mem.Free(b.buf)
+		b.buf = nil
 	}
 }
 
 func (b *bufferedReader) resetBuffer() {
 	if b.buf == nil {
-		b.buf = b.mem.Allocate(b.bufferSz)[:b.bufferSz]
+		b.buf = b.mem.Allocate(b.bufferSz)
 	} else if b.bufferSz > len(b.buf) {
-		newBuf := b.mem.Allocate(b.bufferSz)[:b.bufferSz]
+		newBuf := b.mem.Allocate(b.bufferSz)
 		copy(newBuf, b.buf)
 		b.mem.Free(b.buf)
 		b.buf = newBuf

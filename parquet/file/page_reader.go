@@ -158,7 +158,7 @@ func NewDataPageV1WithStats(buffer *memory.Buffer, num int32, encoding, defEncod
 // After calling this function, the object should not be utilized anymore, otherwise
 // conflicts can arise.
 func (d *DataPageV1) Release() {
-	if d.mem != nil {
+	if d.mem != nil && d.originalBuf != nil {
 		d.mem.Free(d.originalBuf)
 	}
 	d.originalBuf = nil
@@ -232,7 +232,7 @@ func NewDataPageV2WithStats(buffer *memory.Buffer, numValues, numNulls, numRows 
 // After calling this function, the object should not be utilized anymore, otherwise
 // conflicts can arise.
 func (d *DataPageV2) Release() {
-	if d.mem != nil {
+	if d.mem != nil && d.originalBuf != nil {
 		d.mem.Free(d.originalBuf)
 	}
 	d.originalBuf = nil
@@ -295,7 +295,7 @@ func NewDictionaryPage(buffer *memory.Buffer, nvals int32, encoding parquet.Enco
 // After calling this function, the object should not be utilized anymore, otherwise
 // conflicts can arise.
 func (d *DictionaryPage) Release() {
-	if d.mem != nil {
+	if d.mem != nil && d.originalBuf != nil {
 		d.mem.Free(d.originalBuf)
 	}
 	d.originalBuf = nil

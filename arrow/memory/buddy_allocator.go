@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	maxArenaCount    = 3       // maximum arena count
+	maxArenaCount    = 0       // maximum arena count
 	arenaDefaultSize = 1 << 30 // size of each arena
 )
 
@@ -309,6 +309,16 @@ func (b *internalAllocator) freeInternal(bs []byte) {
 	b.sanityCheck()
 }
 
+func (b *internalAllocator) freeAll() {
+	for _, offset := range b.allocated {
+		b.freeInternal(b.buffer[offset:])
+	}
+
+	if len(b.allocated) != 0 || b.allocatedBytes.Load() != 0 {
+		panic("freeAll error")
+	}
+}
+
 /*
  * Mark memory from [start, end), starting at layer 0, as allocated.
  *
@@ -503,13 +513,11 @@ func (b *BuddyAllocator) Allocate(size int) []byte {
 		}
 	}
 
-	if len(b.arenas) < maxArenaCount {
-		if arena := pool.get(); arena != nil {
-			b.arenas = append(b.arenas, arena)
-			buf := arena.allocateInternal(size)
-			b.allocated[UnsafeGetBlkAddr(buf)] = len(b.arenas) - 1
-			return buf
-		}
+	if arena := pool.get(); arena != nil {
+		b.arenas = append(b.arenas, arena)
+		buf := arena.allocateInternal(size)
+		b.allocated[UnsafeGetBlkAddr(buf)] = len(b.arenas) - 1
+		return buf
 	}
 
 	b.allocatedOutside.Add(int64(size))
@@ -532,6 +540,7 @@ func (b *BuddyAllocator) Free(bs []byte) {
 	}
 
 	b.arenas[arenaID].freeInternal(bs)
+	delete(b.allocated, addr)
 }
 
 func (b *BuddyAllocator) Reallocate(size int, bs []byte) []byte {
@@ -553,6 +562,9 @@ func (b *BuddyAllocator) Allocated() int64 {
 // Close return the allocated memory to the pool
 func (b *BuddyAllocator) Close() {
 	for _, arena := range b.arenas {
+		arena.sanityCheck()
+		arena.freeAll()
+		arena.sanityCheck()
 		pool.put(arena)
 	}
 }

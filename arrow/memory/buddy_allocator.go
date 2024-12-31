@@ -68,6 +68,17 @@ func (ap *arenaPool) put(a *internalAllocator) {
 	ap.arenas <- a
 }
 
+func (ap *arenaPool) free() {
+	ap.lock.Lock()
+	defer ap.lock.Unlock()
+
+	ap.allocated = 0
+	for len(ap.arenas) > 0 {
+		<-ap.arenas
+	}
+	runtime.GC()
+}
+
 var pool = &arenaPool{
 	allocated: 0,
 	arenas:    make(chan *internalAllocator, 256),
@@ -78,6 +89,12 @@ const leafSize = 256 << 10
 
 func SetMaxMemoryUsage(size int) {
 	maxArenaCount = size / arenaDefaultSize
+}
+
+// Free all the memory allocated for arenas.
+// TODO(joechenrh): check if there are anyone using the arenas.
+func FreeMemory() {
+	pool.free()
 }
 
 // Convert slice to an uintptr. This value is used as key in map.

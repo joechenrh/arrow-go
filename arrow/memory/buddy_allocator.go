@@ -20,6 +20,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -482,23 +483,35 @@ type BuddyAllocator struct {
 
 	allocatedOutside    atomic.Int64
 	allocatedOutsideNum atomic.Int64
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (b *BuddyAllocator) Init(_ int) {
 	b.allocated = make(map[uintptr]int, maxArenaCount)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		tick := time.NewTicker(5 * time.Second)
-		for range tick.C {
-			var m runtime.MemStats
-			runtime.ReadMemStats(&m)
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
 
-			fmt.Printf("[BuddyAllocator] Inside the allocator: %d MiB(%d blocks), outside the allocator: %d MiB(%d blocks)\n",
-				int(b.Allocated())/1024/1024, len(b.allocated),
-				int(b.allocatedOutsideNum.Load()), int(b.allocatedOutside.Load())/1024/1024,
-			)
+				fmt.Printf("[BuddyAllocator] Inside the allocator: %d MiB(%d blocks), outside the allocator: %d MiB(%d blocks)\n",
+					int(b.Allocated())/1024/1024, len(b.allocated),
+					int(b.allocatedOutsideNum.Load()), int(b.allocatedOutside.Load())/1024/1024,
+				)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
+	b.ctx = ctx
+	b.cancel = cancel
 }
 
 func (b *BuddyAllocator) Allocate(size int) []byte {
@@ -561,6 +574,7 @@ func (b *BuddyAllocator) Allocated() int64 {
 
 // Close return the allocated memory to the pool
 func (b *BuddyAllocator) Close() {
+	b.cancel()
 	for _, arena := range b.arenas {
 		arena.sanityCheck()
 		arena.freeAll()

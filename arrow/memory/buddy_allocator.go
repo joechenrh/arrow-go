@@ -34,8 +34,8 @@ var arenaDefaultSize = 2 << 30
 // The smallest block size is 256KB
 const leafSize = 256 << 10
 
-func SetMaxArenaCount(count int) {
-	maxArenaCount = count
+func SetMaxMemoryUsage(size int) {
+	maxArenaCount = size / arenaDefaultSize
 }
 
 // Convert slice to an uintptr. This value is used as key in map.

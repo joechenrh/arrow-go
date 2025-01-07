@@ -18,12 +18,40 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 
 	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 )
+
+// ByteReader is a wrapper for bytes.NewReader
+type ByteReader struct {
+	io.Reader
+	buf []byte
+	mem memory.Allocator
+}
+
+// Release releases the memory used by the underlying buffer
+func (r *ByteReader) Release() {
+	if r.buf != nil {
+		r.mem.Free(r.buf)
+		r.buf = nil
+	}
+}
+
+// NerByteReader returns a new ByteReader with the provided buffer and memory allocator
+func NewByteReader(buf []byte, mem memory.Allocator) *ByteReader {
+	if mem == nil {
+		mem = memory.DefaultAllocator
+	}
+	return &ByteReader{
+		bytes.NewReader(buf),
+		buf,
+		mem,
+	}
+}
 
 // bufferedReader is similar to bufio.Reader except
 // it will expand the buffer if necessary when asked to Peek
@@ -73,6 +101,10 @@ func (b *bufferedReader) Release() {
 	if b.buf != nil {
 		b.mem.Free(b.buf)
 		b.buf = nil
+	}
+
+	if br, ok := b.rd.(interface{ Release() }); ok {
+		br.Release()
 	}
 }
 

@@ -17,7 +17,6 @@
 package parquet
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 
@@ -76,7 +75,8 @@ func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (B
 		return utils.NewBufferedReaderWithMem(io.NewSectionReader(source, start, nbytes), int(r.BufferSize), r.alloc), nil
 	}
 
-	data := make([]byte, nbytes)
+	data := r.alloc.Allocate(int(nbytes))
+	data = data[:nbytes]
 	n, err := source.ReadAt(data, start)
 	if err != nil {
 		return nil, fmt.Errorf("parquet: tried reading from file, but got error: %w", err)
@@ -85,5 +85,5 @@ func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (B
 		return nil, fmt.Errorf("parquet: tried reading %d bytes starting at position %d from file but only got %d", nbytes, start, n)
 	}
 
-	return utils.NewBufferedReaderWithMem(bytes.NewReader(data), int(nbytes), r.alloc), nil
+	return utils.NewBufferedReaderWithMem(utils.NewByteReader(data, r.alloc), int(nbytes), r.alloc), nil
 }

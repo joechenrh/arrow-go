@@ -110,9 +110,9 @@ func (b *bufferedReader) Release() {
 
 func (b *bufferedReader) resetBuffer() {
 	if b.buf == nil {
-		b.buf = b.mem.Allocate(b.bufferSz)
+		b.buf = b.mem.Allocate(b.bufferSz, memory.BufferOthers)
 	} else if b.bufferSz > len(b.buf) {
-		newBuf := b.mem.Allocate(b.bufferSz)
+		newBuf := b.mem.Allocate(b.bufferSz, memory.BufferOthers)
 		copy(newBuf, b.buf)
 		b.mem.Free(b.buf)
 		b.buf = newBuf

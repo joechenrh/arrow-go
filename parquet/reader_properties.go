@@ -75,7 +75,7 @@ func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (B
 		return utils.NewBufferedReaderWithMem(io.NewSectionReader(source, start, nbytes), int(r.BufferSize), r.alloc), nil
 	}
 
-	data := r.alloc.Allocate(int(nbytes))
+	data := r.alloc.Allocate(int(nbytes), memory.BufferOthers)
 	data = data[:nbytes]
 	n, err := source.ReadAt(data, start)
 	if err != nil {

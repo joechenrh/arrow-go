@@ -533,7 +533,7 @@ func (b *BuddyAllocator) Init(_ int) {
 	b.cancel = cancel
 }
 
-func (b *BuddyAllocator) Allocate(size int) []byte {
+func (b *BuddyAllocator) Allocate(size int, _ BufferType) []byte {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -575,9 +575,9 @@ func (b *BuddyAllocator) Free(bs []byte) {
 	delete(b.allocated, addr)
 }
 
-func (b *BuddyAllocator) Reallocate(size int, bs []byte) []byte {
+func (b *BuddyAllocator) Reallocate(size int, bs []byte, tp BufferType) []byte {
 	b.Free(bs)
-	return b.Allocate(size)
+	return b.Allocate(size, tp)
 }
 
 func (b *BuddyAllocator) Allocated() int64 {

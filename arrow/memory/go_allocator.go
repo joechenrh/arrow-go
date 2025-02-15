@@ -20,7 +20,7 @@ type GoAllocator struct{}
 
 func NewGoAllocator() *GoAllocator { return &GoAllocator{} }
 
-func (a *GoAllocator) Allocate(size int) []byte {
+func (a *GoAllocator) Allocate(size int, _ BufferType) []byte {
 	buf := make([]byte, size+alignment) // padding for 64-byte alignment
 	addr := int(addressOf(buf))
 	next := roundUpToMultipleOf64(addr)
@@ -31,11 +31,11 @@ func (a *GoAllocator) Allocate(size int) []byte {
 	return buf[:size:size]
 }
 
-func (a *GoAllocator) Reallocate(size int, b []byte) []byte {
+func (a *GoAllocator) Reallocate(size int, b []byte, tp BufferType) []byte {
 	if cap(b) >= size {
 		return b[:size]
 	}
-	newBuf := a.Allocate(size)
+	newBuf := a.Allocate(size, tp)
 	copy(newBuf, b)
 	return newBuf
 }

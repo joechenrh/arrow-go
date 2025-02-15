@@ -415,7 +415,7 @@ func (p *serializedPageReader) Page() Page {
 }
 
 func (p *serializedPageReader) decompress(lenCompressed int, buf []byte) ([]byte, error) {
-	decompressBuffer := p.mem.Allocate(lenCompressed)
+	decompressBuffer := p.mem.Allocate(lenCompressed, memory.BufferCompressed)
 	defer p.mem.Free(decompressBuffer)
 	decompressBuffer = decompressBuffer[:0]
 
@@ -517,7 +517,12 @@ func (p *serializedPageReader) Next() bool {
 			p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)
 		}
 
-		pageBuf := p.mem.Allocate(lenUncompressed)
+		bufferTp := memory.BufferDataPage
+		if p.curPageHdr.GetType() == format.PageType_DICTIONARY_PAGE {
+			bufferTp = memory.BufferDictionary
+		}
+
+		pageBuf := p.mem.Allocate(lenUncompressed, bufferTp)
 
 		switch p.curPageHdr.GetType() {
 		case format.PageType_DICTIONARY_PAGE:

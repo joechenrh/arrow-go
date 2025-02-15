@@ -121,9 +121,9 @@ func (b *Buffer) Reserve(capacity int) {
 	if capacity > len(b.buf) {
 		newCap := roundUpToMultipleOf64(capacity)
 		if len(b.buf) == 0 {
-			b.buf = b.mem.Allocate(newCap)
+			b.buf = b.mem.Allocate(newCap, BufferOthers)
 		} else {
-			b.buf = b.mem.Reallocate(newCap, b.buf)
+			b.buf = b.mem.Reallocate(newCap, b.buf, BufferOthers)
 		}
 	}
 }
@@ -151,7 +151,7 @@ func (b *Buffer) resize(newSize int, shrink bool) {
 				b.mem.Free(b.buf)
 				b.buf = nil
 			} else {
-				b.buf = b.mem.Reallocate(newCap, b.buf)
+				b.buf = b.mem.Reallocate(newCap, b.buf, BufferOthers)
 			}
 		}
 	}

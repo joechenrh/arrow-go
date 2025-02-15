@@ -20,8 +20,23 @@ const (
 	alignment = 64
 )
 
+type BufferType string
+
+const (
+	// BufferCompressed means the buffer is used to store compressed data.
+	BufferCompressed BufferType = "compressed"
+	// BufferDictionary means the buffer is used to store uncompressed dictionary page.
+	BufferDictionary BufferType = "dictpage"
+	// BufferDataPage means the buffer is used to store uncompressed data page.
+	BufferDataPage BufferType = "datapage"
+	// BufferOthers means the buffer is used to for other usage, like byte reader.
+	BufferOthers BufferType = "others"
+)
+
 type Allocator interface {
-	Allocate(size int) []byte
-	Reallocate(size int, b []byte) []byte
+	// Allocate a buffer with given type.
+	Allocate(size int, tp BufferType) []byte
+	// Reallocate a buffer with given type.
+	Reallocate(size int, b []byte, tp BufferType) []byte
 	Free(b []byte)
 }

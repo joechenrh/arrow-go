@@ -43,9 +43,9 @@ func NewCheckedAllocator(mem Allocator) *CheckedAllocator {
 
 func (a *CheckedAllocator) CurrentAlloc() int { return int(atomic.LoadInt64(&a.sz)) }
 
-func (a *CheckedAllocator) Allocate(size int) []byte {
+func (a *CheckedAllocator) Allocate(size int, tp BufferType) []byte {
 	atomic.AddInt64(&a.sz, int64(size))
-	out := a.mem.Allocate(size)
+	out := a.mem.Allocate(size, tp)
 	if size == 0 {
 		return out
 	}
@@ -65,11 +65,11 @@ func (a *CheckedAllocator) Allocate(size int) []byte {
 	return out
 }
 
-func (a *CheckedAllocator) Reallocate(size int, b []byte) []byte {
+func (a *CheckedAllocator) Reallocate(size int, b []byte, tp BufferType) []byte {
 	atomic.AddInt64(&a.sz, int64(size-len(b)))
 
 	oldptr := uintptr(unsafe.Pointer(&b[0]))
-	out := a.mem.Reallocate(size, b)
+	out := a.mem.Reallocate(size, b, tp)
 	if size == 0 {
 		return out
 	}

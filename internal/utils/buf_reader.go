@@ -26,30 +26,79 @@ import (
 	"github.com/joechenrh/arrow-go/v18/arrow/memory"
 )
 
-// ByteReader is a wrapper for bytes.NewReader
-type ByteReader struct {
-	io.Reader
+// byteReader is a wrapper for bytes.NewReader
+type byteReader struct {
+	r   *bytes.Reader
 	buf []byte
+	pos int
 	mem memory.Allocator
 }
 
-// Release releases the memory used by the underlying buffer
-func (r *ByteReader) Release() {
-	if r.buf != nil {
-		r.mem.Free(r.buf)
-		r.buf = nil
+// NewByteReader creates a new ByteReader instance from the given byte slice.
+// It wraps the bytes.NewReader function to implement BufferedReader interface.
+func NewByteReader(buf []byte, mem memory.Allocator) *byteReader {
+	r := bytes.NewReader(buf)
+	return &byteReader{
+		r,
+		buf,
+		0,
+		mem,
 	}
 }
 
-// NerByteReader returns a new ByteReader with the provided buffer and memory allocator
-func NewByteReader(buf []byte, mem memory.Allocator) *ByteReader {
-	if mem == nil {
-		mem = memory.DefaultAllocator
+func (r *byteReader) Read(buf []byte) (n int, err error) {
+	n, err = r.r.Read(buf)
+	r.pos += n
+	return
+}
+
+func (r *byteReader) Seek(offset int64, whence int) (pos int64, err error) {
+	pos, err = r.r.Seek(offset, whence)
+	r.pos = int(pos)
+	return
+}
+
+func (r *byteReader) Peek(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("arrow/bytereader: %w", bufio.ErrNegativeCount)
 	}
-	return &ByteReader{
-		bytes.NewReader(buf),
-		buf,
-		mem,
+	available := len(r.buf) - r.pos
+	read := min(n, available)
+	var err error
+	if read < n {
+		err = io.EOF
+	}
+	return r.buf[r.pos : r.pos+read], err
+}
+
+func (r *byteReader) Discard(n int) (int, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("arrow/bytereader: %w", bufio.ErrNegativeCount)
+	}
+
+	var (
+		err    error
+		newPos = r.pos + n
+	)
+
+	if newPos >= len(r.buf) {
+		newPos = len(r.buf)
+		n = newPos - r.pos
+		err = io.EOF
+	}
+
+	_, seekErr := r.Seek(int64(n), io.SeekCurrent)
+	if seekErr != nil {
+		return n, seekErr
+	}
+	return n, err
+}
+
+// Release releases the memory used by the underlying buffer
+func (r *byteReader) Release() {
+	if r.buf != nil {
+		r.mem.Free(r.buf)
+		r.buf = nil
 	}
 }
 

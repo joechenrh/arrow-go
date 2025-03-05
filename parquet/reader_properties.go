@@ -85,5 +85,5 @@ func (r *ReaderProperties) GetStream(source io.ReaderAt, start, nbytes int64) (B
 		return nil, fmt.Errorf("parquet: tried reading %d bytes starting at position %d from file but only got %d", nbytes, start, n)
 	}
 
-	return utils.NewBufferedReaderWithMem(utils.NewByteReader(data, r.alloc), int(nbytes), r.alloc), nil
+	return utils.NewByteReader(data, r.alloc), nil
 }

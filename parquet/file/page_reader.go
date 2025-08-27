@@ -18,6 +18,7 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -349,6 +350,21 @@ func (d *DictionaryPage) Release() {
 // IsSorted returns whether the dictionary itself is sorted
 func (d *DictionaryPage) IsSorted() bool { return d.sorted }
 
+// prefetchData holds the result of a prefetch operation
+type prefetchData struct {
+	header          *format.PageHeader
+	compressedData  []byte
+	lenCompressed   int
+	lenUncompressed int
+	err             error
+	valid           bool
+}
+
+// WorkerPool represents an interface for submitting tasks to a worker pool
+type WorkerPool interface {
+	Submit(ctx context.Context, task func())
+}
+
 type serializedPageReader struct {
 	r             parquet.BufferedReader
 	chunk         *metadata.ColumnChunkMetaData
@@ -375,6 +391,13 @@ type serializedPageReader struct {
 	dataPageBuffer   *memory.Buffer
 	dictPageBuffer   *memory.Buffer
 	err              error
+
+	// Prefetch related fields
+	workerPool      WorkerPool
+	prefetchEnabled bool
+	prefetched      chan *prefetchData
+	prefetchCtx     context.Context
+	prefetchCancel  context.CancelFunc
 }
 
 func (p *serializedPageReader) Close() {
@@ -382,6 +405,24 @@ func (p *serializedPageReader) Close() {
 		p.decompressBuffer.Release()
 		p.dictPageBuffer.Release()
 		p.dataPageBuffer.Release()
+	}
+	if p.prefetchCancel != nil {
+		p.prefetchCancel()
+	}
+}
+
+// SetWorkerPool enables prefetch mode by setting the worker pool to use for prefetching
+func (p *serializedPageReader) SetWorkerPool(pool WorkerPool) {
+	p.workerPool = pool
+	if pool != nil {
+		p.prefetchEnabled = true
+		p.prefetched = make(chan *prefetchData, 1)
+		p.prefetchCtx, p.prefetchCancel = context.WithCancel(context.Background())
+	} else {
+		p.prefetchEnabled = false
+		if p.prefetchCancel != nil {
+			p.prefetchCancel()
+		}
 	}
 }
 
@@ -453,6 +494,23 @@ func (p *serializedPageReader) Reset(r parquet.BufferedReader, nrows int64, comp
 	p.curPageHdr, p.curPage, p.err = nil, nil, nil
 	p.r = r
 
+	// Cancel any existing prefetch operations and drain the channel
+	if p.prefetchCancel != nil {
+		p.prefetchCancel()
+	}
+	if p.prefetched != nil {
+		select {
+		case <-p.prefetched:
+		default:
+		}
+	}
+
+	// Reinitialize prefetch if it was enabled
+	if p.prefetchEnabled && p.workerPool != nil {
+		p.prefetched = make(chan *prefetchData, 1)
+		p.prefetchCtx, p.prefetchCancel = context.WithCancel(context.Background())
+	}
+
 	p.codec, p.err = compress.GetCodec(compressType)
 	if p.err != nil {
 		return
@@ -512,6 +570,230 @@ func (p *serializedPageReader) decompress(rd io.Reader, lenCompressed int, buf [
 	}
 
 	return p.codec.Decode(buf, data), nil
+}
+
+// decompressFromBytes decompresses data from a byte slice instead of a reader
+func (p *serializedPageReader) decompressFromBytes(compressedData []byte, buf []byte) ([]byte, error) {
+	data := compressedData
+	if p.cryptoCtx.DataDecryptor != nil {
+		data = p.cryptoCtx.DataDecryptor.Decrypt(compressedData)
+	}
+
+	return p.codec.Decode(buf, data), nil
+}
+
+// submitPrefetchTask submits a task to prefetch the next page data
+func (p *serializedPageReader) submitPrefetchTask() {
+	if !p.prefetchEnabled || p.workerPool == nil {
+		return
+	}
+
+	p.workerPool.Submit(p.prefetchCtx, func() {
+		select {
+		case <-p.prefetchCtx.Done():
+			return
+		default:
+		}
+		
+		result := p.readNextPageData()
+		
+		select {
+		case p.prefetched <- result:
+		case <-p.prefetchCtx.Done():
+		}
+	})
+}
+
+// readNextPageData performs the I/O operations to read the next page header and compressed data
+func (p *serializedPageReader) readNextPageData() *prefetchData {
+	result := &prefetchData{}
+	
+	// Check if we've read all rows
+	if p.rowsSeen >= p.nrows {
+		result.err = io.EOF
+		return result
+	}
+
+	header := format.NewPageHeader()
+	if err := p.readPageHeader(p.r, header); err != nil {
+		result.err = err
+		return result
+	}
+
+	lenCompressed := int(header.GetCompressedPageSize())
+	lenUncompressed := int(header.GetUncompressedPageSize())
+	if lenCompressed < 0 || lenUncompressed < 0 {
+		result.err = errors.New("parquet: invalid page header")
+		return result
+	}
+
+	// Read the compressed data
+	compressedData := make([]byte, lenCompressed)
+	if _, err := io.ReadFull(p.r, compressedData); err != nil {
+		result.err = err
+		return result
+	}
+
+	result.header = header
+	result.compressedData = compressedData
+	result.lenCompressed = lenCompressed
+	result.lenUncompressed = lenUncompressed
+	result.valid = true
+	return result
+}
+
+// processPageData performs the CPU operations to decompress and create page objects from prefetched data
+func (p *serializedPageReader) processPageData(data *prefetchData) bool {
+	if !data.valid || data.err != nil {
+		if data.err != io.EOF {
+			p.err = data.err
+		}
+		return false
+	}
+
+	p.curPageHdr = data.header
+	lenUncompressed := data.lenUncompressed
+
+	if p.cryptoCtx.DataDecryptor != nil {
+		p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)
+	}
+
+	switch p.curPageHdr.GetType() {
+	case format.PageType_DICTIONARY_PAGE:
+		p.cryptoCtx.StartDecryptWithDictionaryPage = false
+		dictHeader := p.curPageHdr.GetDictionaryPageHeader()
+		if dictHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		p.dictPageBuffer.ResizeNoShrink(lenUncompressed)
+		buf := memory.NewBufferBytes(p.dictPageBuffer.Bytes())
+
+		decompressedData, err := p.decompressFromBytes(data.compressedData, buf.Bytes())
+		if err != nil {
+			p.err = err
+			return false
+		}
+		if len(decompressedData) != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed dictionary page, got %d bytes", lenUncompressed, len(decompressedData))
+			return false
+		}
+
+		// make dictionary page
+		p.curPage = &DictionaryPage{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dictHeader.GetNumValues(),
+				encoding: dictHeader.GetEncoding(),
+			},
+			sorted: dictHeader.IsSetIsSorted() && dictHeader.GetIsSorted(),
+		}
+
+	case format.PageType_DATA_PAGE:
+		p.pageOrd++
+		dataHeader := p.curPageHdr.GetDataPageHeader()
+		if dataHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
+		buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
+
+		firstRowIdx := p.rowsSeen
+		p.rowsSeen += int64(dataHeader.GetNumValues())
+		decompressedData, err := p.decompressFromBytes(data.compressedData, buf.Bytes())
+		if err != nil {
+			p.err = err
+			return false
+		}
+		if len(decompressedData) != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, len(decompressedData))
+			return false
+		}
+
+		// make datapagev1
+		p.curPage = &DataPageV1{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dataHeader.GetNumValues(),
+				encoding: dataHeader.GetEncoding(),
+			},
+			defLvlEncoding:   dataHeader.GetDefinitionLevelEncoding(),
+			repLvlEncoding:   dataHeader.GetRepetitionLevelEncoding(),
+			uncompressedSize: int32(lenUncompressed),
+			statistics:       extractStats(dataHeader),
+			firstRowIndex:    firstRowIdx,
+		}
+	case format.PageType_DATA_PAGE_V2:
+		p.pageOrd++
+		dataHeader := p.curPageHdr.GetDataPageHeaderV2()
+		if dataHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		if dataHeader.GetDefinitionLevelsByteLength() < 0 || dataHeader.GetRepetitionLevelsByteLength() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative levels byte length)")
+			return false
+		}
+
+		p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
+		buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
+
+		compressed := dataHeader.GetIsCompressed()
+		// extract stats
+		firstRowIdx := p.rowsSeen
+		p.rowsSeen += int64(dataHeader.GetNumRows())
+		levelsBytelen, ok := utils.Add(int(dataHeader.GetDefinitionLevelsByteLength()), int(dataHeader.GetRepetitionLevelsByteLength()))
+		if !ok {
+			p.err = xerrors.New("parquet: levels size too large (corrupt file?)")
+			return false
+		}
+
+		if compressed {
+			if levelsBytelen > 0 {
+				copy(buf.Bytes()[:levelsBytelen], data.compressedData[:levelsBytelen])
+			}
+			if _, p.err = p.decompressFromBytes(data.compressedData[levelsBytelen:], buf.Bytes()[levelsBytelen:]); p.err != nil {
+				return false
+			}
+		} else {
+			copy(buf.Bytes(), data.compressedData)
+		}
+
+		if buf.Len() != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, buf.Len())
+			return false
+		}
+
+		// make datapage v2
+		p.curPage = &DataPageV2{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dataHeader.GetNumValues(),
+				encoding: dataHeader.GetEncoding(),
+			},
+			nulls:            dataHeader.GetNumNulls(),
+			nrows:            dataHeader.GetNumRows(),
+			defLvlByteLen:    dataHeader.GetDefinitionLevelsByteLength(),
+			repLvlByteLen:    dataHeader.GetRepetitionLevelsByteLength(),
+			compressed:       compressed,
+			uncompressedSize: int32(lenUncompressed),
+			statistics:       extractStats(dataHeader),
+			firstRowIndex:    firstRowIdx,
+		}
+	default:
+		// we don't know this page type, we're allowed to skip non-data pages
+		// For prefetch mode, we need to try reading the next page
+		return false // This will cause the caller to try again
+	}
+
+	return true
 }
 
 type dataheader interface {
@@ -692,164 +974,39 @@ func (p *serializedPageReader) Next() bool {
 		p.curPage.Release()
 	}
 	p.curPage = nil
-	p.curPageHdr = format.NewPageHeader()
 	p.err = nil
 
 	for p.rowsSeen < p.nrows {
-		if err := p.readPageHeader(p.r, p.curPageHdr); err != nil {
-			if err != io.EOF {
-				p.err = err
+		var pageData *prefetchData
+		
+		// Check if prefetch is enabled and we have prefetched data
+		if p.prefetchEnabled && p.prefetched != nil {
+			select {
+			case pageData = <-p.prefetched:
+				// We have prefetched data, submit next prefetch task
+				p.submitPrefetchTask()
+			default:
+				// No prefetched data available, read synchronously
+				pageData = p.readNextPageData()
+				// Submit prefetch task for next call
+				p.submitPrefetchTask()
 			}
+		} else {
+			// Prefetch disabled, read synchronously
+			pageData = p.readNextPageData()
+		}
 
+		// Process the page data
+		if p.processPageData(pageData) {
+			return true
+		}
+
+		// If processPageData returned false, it means we need to skip this page
+		// (unknown page type) and try the next one. The error handling is done
+		// inside processPageData.
+		if p.err != nil {
 			return false
 		}
-
-		lenCompressed := int(p.curPageHdr.GetCompressedPageSize())
-		lenUncompressed := int(p.curPageHdr.GetUncompressedPageSize())
-		if lenCompressed < 0 || lenUncompressed < 0 {
-			p.err = errors.New("parquet: invalid page header")
-			return false
-		}
-
-		if p.cryptoCtx.DataDecryptor != nil {
-			p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)
-		}
-
-		switch p.curPageHdr.GetType() {
-		case format.PageType_DICTIONARY_PAGE:
-			p.cryptoCtx.StartDecryptWithDictionaryPage = false
-			dictHeader := p.curPageHdr.GetDictionaryPageHeader()
-			if dictHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			p.dictPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dictPageBuffer.Bytes())
-
-			data, err := p.decompress(p.r, lenCompressed, buf.Bytes())
-			if err != nil {
-				p.err = err
-				return false
-			}
-			if len(data) != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed dictionary page, got %d bytes", lenUncompressed, len(data))
-				return false
-			}
-
-			// make dictionary page
-			p.curPage = &DictionaryPage{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dictHeader.GetNumValues(),
-					encoding: dictHeader.GetEncoding(),
-				},
-				sorted: dictHeader.IsSetIsSorted() && dictHeader.GetIsSorted(),
-			}
-
-		case format.PageType_DATA_PAGE:
-			p.pageOrd++
-			dataHeader := p.curPageHdr.GetDataPageHeader()
-			if dataHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
-
-			firstRowIdx := p.rowsSeen
-			p.rowsSeen += int64(dataHeader.GetNumValues())
-			data, err := p.decompress(p.r, lenCompressed, buf.Bytes())
-			if err != nil {
-				p.err = err
-				return false
-			}
-			if len(data) != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, len(data))
-				return false
-			}
-
-			// make datapagev1
-			p.curPage = &DataPageV1{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dataHeader.GetNumValues(),
-					encoding: dataHeader.GetEncoding(),
-				},
-				defLvlEncoding:   dataHeader.GetDefinitionLevelEncoding(),
-				repLvlEncoding:   dataHeader.GetRepetitionLevelEncoding(),
-				uncompressedSize: int32(lenUncompressed),
-				statistics:       extractStats(dataHeader),
-				firstRowIndex:    firstRowIdx,
-			}
-		case format.PageType_DATA_PAGE_V2:
-			p.pageOrd++
-			dataHeader := p.curPageHdr.GetDataPageHeaderV2()
-			if dataHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			if dataHeader.GetDefinitionLevelsByteLength() < 0 || dataHeader.GetRepetitionLevelsByteLength() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative levels byte length)")
-				return false
-			}
-
-			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
-
-			compressed := dataHeader.GetIsCompressed()
-			// extract stats
-			firstRowIdx := p.rowsSeen
-			p.rowsSeen += int64(dataHeader.GetNumRows())
-			levelsBytelen, ok := utils.Add(int(dataHeader.GetDefinitionLevelsByteLength()), int(dataHeader.GetRepetitionLevelsByteLength()))
-			if !ok {
-				p.err = xerrors.New("parquet: levels size too large (corrupt file?)")
-				return false
-			}
-
-			if compressed {
-				if levelsBytelen > 0 {
-					io.ReadFull(p.r, buf.Bytes()[:levelsBytelen])
-				}
-				if _, p.err = p.decompress(p.r, lenCompressed-levelsBytelen, buf.Bytes()[levelsBytelen:]); p.err != nil {
-					return false
-				}
-			} else {
-				io.ReadFull(p.r, buf.Bytes())
-			}
-
-			if buf.Len() != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, buf.Len())
-				return false
-			}
-
-			// make datapage v2
-			p.curPage = &DataPageV2{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dataHeader.GetNumValues(),
-					encoding: dataHeader.GetEncoding(),
-				},
-				nulls:            dataHeader.GetNumNulls(),
-				nrows:            dataHeader.GetNumRows(),
-				defLvlByteLen:    dataHeader.GetDefinitionLevelsByteLength(),
-				repLvlByteLen:    dataHeader.GetRepetitionLevelsByteLength(),
-				compressed:       compressed,
-				uncompressedSize: int32(lenUncompressed),
-				statistics:       extractStats(dataHeader),
-				firstRowIndex:    firstRowIdx,
-			}
-		default:
-			// we don't know this page type, we're allowed to skip non-data pages
-			continue
-		}
-
-		return true
 	}
 
 	return false

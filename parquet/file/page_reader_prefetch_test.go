@@ -159,6 +159,9 @@ func TestSerializedPageReaderPrefetchReset(t *testing.T) {
 	// Enable prefetch
 	reader.SetWorkerPool(pool)
 	
+	// Verify buffer pool is created
+	assert.NotNil(t, reader.bufferPool)
+	
 	// Create a mock reader for reset
 	mockReader := utils.NewBufferedReader(&mockReaderSeeker{}, 1024)
 	
@@ -168,6 +171,55 @@ func TestSerializedPageReaderPrefetchReset(t *testing.T) {
 	// Prefetch should still be enabled after reset
 	assert.True(t, reader.prefetchEnabled)
 	assert.NotNil(t, reader.prefetched)
+	assert.NotNil(t, reader.bufferPool)
+}
+
+func TestSerializedPageReaderBufferPool(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	defer mem.AssertSize(t, 0)
+
+	reader := &serializedPageReader{
+		maxPageHeaderSize: defaultMaxPageHeaderSize,
+		nrows:             0,
+		mem:               mem,
+	}
+
+	// Initialize buffers without calling init method
+	reader.decompressBuffer = memory.NewResizableBuffer(mem)
+	reader.dataPageBuffer = memory.NewResizableBuffer(mem)
+	reader.dictPageBuffer = memory.NewResizableBuffer(mem)
+	
+	defer reader.Close()
+
+	pool := NewMockWorkerPool(1)
+	defer pool.Close()
+	
+	// Enable prefetch to create buffer pool
+	reader.SetWorkerPool(pool)
+	
+	// Test buffer pool operations
+	t.Run("buffer_pool_operations", func(t *testing.T) {
+		// Get a buffer from the pool
+		buf1 := reader.getBufferFromPool()
+		assert.NotNil(t, buf1)
+		
+		// Return it to the pool
+		reader.returnBufferToPool(buf1)
+		
+		// Get another buffer - should potentially reuse the returned one
+		buf2 := reader.getBufferFromPool()
+		assert.NotNil(t, buf2)
+		
+		// Return it back
+		reader.returnBufferToPool(buf2)
+	})
+	
+	// Test disabling prefetch cleans up buffer pool
+	t.Run("disable_prefetch_cleanup", func(t *testing.T) {
+		reader.SetWorkerPool(nil)
+		assert.Nil(t, reader.bufferPool)
+		assert.False(t, reader.prefetchEnabled)
+	})
 }
 
 // mockReaderSeeker is a simple mock implementation

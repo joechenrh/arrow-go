@@ -399,6 +399,7 @@ type serializedPageReader struct {
 	prefetchCtx         context.Context
 	prefetchCancel      context.CancelFunc
 	prefetchBuffer      *memory.Buffer
+	bufferPool          chan *memory.Buffer
 }
 
 func (p *serializedPageReader) Close() {
@@ -409,6 +410,13 @@ func (p *serializedPageReader) Close() {
 	}
 	if p.prefetchBuffer != nil {
 		p.prefetchBuffer.Release()
+	}
+	// Drain and release buffers from the buffer pool
+	if p.bufferPool != nil {
+		close(p.bufferPool)
+		for buf := range p.bufferPool {
+			buf.Release()
+		}
 	}
 	if p.prefetchCancel != nil {
 		p.prefetchCancel()
@@ -426,6 +434,11 @@ func (p *serializedPageReader) SetWorkerPool(pool WorkerPool) {
 			p.mem = memory.NewGoAllocator()
 		}
 		p.prefetchBuffer = memory.NewResizableBuffer(p.mem)
+		// Create buffer pool with some initial buffers
+		p.bufferPool = make(chan *memory.Buffer, 2) // Buffer for current and next
+		for i := 0; i < 2; i++ {
+			p.bufferPool <- memory.NewResizableBuffer(p.mem)
+		}
 		// Start the first prefetch task if we have a reader
 		if p.r != nil {
 			p.submitPrefetchTask()
@@ -438,6 +451,14 @@ func (p *serializedPageReader) SetWorkerPool(pool WorkerPool) {
 		if p.prefetchBuffer != nil {
 			p.prefetchBuffer.Release()
 			p.prefetchBuffer = nil
+		}
+		// Clean up buffer pool
+		if p.bufferPool != nil {
+			close(p.bufferPool)
+			for buf := range p.bufferPool {
+				buf.Release()
+			}
+			p.bufferPool = nil
 		}
 	}
 }
@@ -531,6 +552,13 @@ func (p *serializedPageReader) Reset(r parquet.BufferedReader, nrows int64, comp
 			}
 			p.prefetchBuffer = memory.NewResizableBuffer(p.mem)
 		}
+		// Reinitialize buffer pool if needed
+		if p.bufferPool == nil {
+			p.bufferPool = make(chan *memory.Buffer, 2)
+			for i := 0; i < 2; i++ {
+				p.bufferPool <- memory.NewResizableBuffer(p.mem)
+			}
+		}
 		// Start the first prefetch task
 		p.submitPrefetchTask()
 	}
@@ -606,6 +634,39 @@ func (p *serializedPageReader) decompressFromBytes(compressedData *memory.Buffer
 	return p.codec.Decode(buf, data), nil
 }
 
+// getBufferFromPool gets a buffer from the pool or creates a new one if pool is empty
+func (p *serializedPageReader) getBufferFromPool() *memory.Buffer {
+	if p.bufferPool == nil {
+		return memory.NewResizableBuffer(p.mem)
+	}
+	
+	select {
+	case buf := <-p.bufferPool:
+		return buf
+	default:
+		// Pool is empty, create a new buffer
+		return memory.NewResizableBuffer(p.mem)
+	}
+}
+
+// returnBufferToPool returns a buffer to the pool for reuse
+func (p *serializedPageReader) returnBufferToPool(buf *memory.Buffer) {
+	if p.bufferPool == nil || buf == nil {
+		if buf != nil {
+			buf.Release()
+		}
+		return
+	}
+	
+	select {
+	case p.bufferPool <- buf:
+		// Successfully returned to pool
+	default:
+		// Pool is full, release the buffer
+		buf.Release()
+	}
+}
+
 // submitPrefetchTask submits a task to prefetch the next page data
 func (p *serializedPageReader) submitPrefetchTask() {
 	if !p.prefetchEnabled || p.workerPool == nil {
@@ -651,28 +712,19 @@ func (p *serializedPageReader) readNextPageData() *prefetchData {
 		return result
 	}
 
-	// Read the compressed data
-	var compressedData *memory.Buffer
-	if p.prefetchBuffer != nil {
-		// Use the reusable prefetch buffer
-		p.prefetchBuffer.ResizeNoShrink(lenCompressed)
-		if _, err := io.ReadFull(p.r, p.prefetchBuffer.Bytes()[:lenCompressed]); err != nil {
-			result.err = err
-			return result
-		}
-		compressedData = memory.NewBufferBytes(p.prefetchBuffer.Bytes()[:lenCompressed])
-	} else {
-		// Fallback to creating a new buffer (non-prefetch mode)
-		tempData := make([]byte, lenCompressed)
-		if _, err := io.ReadFull(p.r, tempData); err != nil {
-			result.err = err
-			return result
-		}
-		compressedData = memory.NewBufferBytes(tempData)
+	// Get a buffer from the pool for storing compressed data
+	compressedBuffer := p.getBufferFromPool()
+	compressedBuffer.ResizeNoShrink(lenCompressed)
+	
+	if _, err := io.ReadFull(p.r, compressedBuffer.Bytes()[:lenCompressed]); err != nil {
+		// Return buffer to pool on error
+		p.returnBufferToPool(compressedBuffer)
+		result.err = err
+		return result
 	}
 
 	result.header = header
-	result.compressedData = compressedData
+	result.compressedData = compressedBuffer
 	result.lenCompressed = lenCompressed
 	result.lenUncompressed = lenUncompressed
 	result.valid = true
@@ -689,11 +741,18 @@ func (p *serializedPageReader) processPageData(data *prefetchData) bool {
 				p.prefetchCancel()
 			}
 		}
+		// Return buffer to pool if it exists
+		if data.compressedData != nil {
+			p.returnBufferToPool(data.compressedData)
+		}
 		return false
 	}
 
 	p.curPageHdr = data.header
 	lenUncompressed := data.lenUncompressed
+
+	// Make sure to return the buffer to pool when we're done processing
+	defer p.returnBufferToPool(data.compressedData)
 
 	if p.cryptoCtx.DataDecryptor != nil {
 		p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)

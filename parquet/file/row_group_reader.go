@@ -26,6 +26,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/internal/encryption"
 	format "github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet"
 	"github.com/apache/arrow-go/v18/parquet/metadata"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
 
@@ -44,6 +45,7 @@ type RowGroupReader struct {
 	pageIndexReader   *metadata.PageIndexReader
 	rgPageIndexReader func() (*metadata.RowGroupPageIndexReader, error)
 	bufferPool        *sync.Pool
+	workerPool        *errgroup.Group
 }
 
 // MetaData returns the metadata of the current Row Group
@@ -68,6 +70,9 @@ func (r *RowGroupReader) Column(i int) (ColumnChunkReader, error) {
 
 	descr := r.fileMetadata.Schema.Column(i)
 	pageRdr, err := r.GetColumnPageReader(i)
+	if r.workerPool != nil {
+		pageRdr.SetWorkerPool(r.workerPool)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("parquet: unable to initialize page reader: %w", err)
 	}

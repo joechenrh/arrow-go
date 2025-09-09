@@ -29,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/internal/encryption"
 	"github.com/apache/arrow-go/v18/parquet/metadata"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
 
@@ -51,6 +52,7 @@ type Reader struct {
 	pageIndexReader   *metadata.PageIndexReader
 	bloomFilterReader *metadata.BloomFilterReader
 
+	WorkerPool *errgroup.Group
 	bufferPool sync.Pool
 }
 
@@ -69,6 +71,18 @@ func WithReadProps(props *parquet.ReaderProperties) ReadOption {
 func WithMetadata(m *metadata.FileMetaData) ReadOption {
 	return func(r *Reader) {
 		r.metadata = m
+	}
+}
+
+// WithPrefetch add a worker pool be used for prefetching pages in reader.
+func WithPrefetch(limit int) ReadOption {
+	return func(r *Reader) {
+		if r.WorkerPool != nil || limit <= 0 {
+			return
+		}
+		workerPool := &errgroup.Group{}
+		workerPool.SetLimit(limit)
+		r.WorkerPool = workerPool
 	}
 }
 
@@ -321,6 +335,7 @@ func (f *Reader) RowGroup(i int) *RowGroupReader {
 		r:               f.r,
 		fileDecryptor:   f.fileDecryptor,
 		bufferPool:      &f.bufferPool,
+		workerPool:      f.WorkerPool,
 		pageIndexReader: f.pageIndexReader,
 		// don't pre-emptively initialize the row group page index reader
 		// do it on demand, but ensure that it is goroutine safe.

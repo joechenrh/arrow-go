@@ -34,8 +34,8 @@ import (
 const (
 	// 4 MB is the default maximum page header size
 	defaultMaxPageHeaderSize = 4 * 1024 * 1024
-	// 16 KB is the default expected page header size
-	defaultPageHeaderSize = 16 * 1024
+	// 1 KB is the default expected page header size
+	defaultPageHeaderSize = 1 * 1024
 )
 
 // cloneByteArray is a helper function to clone a slice of byte slices

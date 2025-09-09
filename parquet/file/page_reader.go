@@ -32,8 +32,11 @@ import (
 	format "github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet"
 	"github.com/apache/arrow-go/v18/parquet/internal/thrift"
 	"github.com/apache/arrow-go/v18/parquet/metadata"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
+
+const PrefetchSize = 2
 
 // PageReader is the interface used by the columnreader in order to read
 // and handle DataPages and loop through them.
@@ -53,6 +56,7 @@ type PageReader interface {
 	// Get the dictionary page for this column chunk
 	GetDictionaryPage() (*DictionaryPage, error)
 	SeekToPageWithRow(rowIdx int64) error
+	SetWorkerPool(pool *errgroup.Group)
 	// Close releases the resources held by the reader.
 	Close() error
 }
@@ -349,6 +353,26 @@ func (d *DictionaryPage) Release() {
 // IsSorted returns whether the dictionary itself is sorted
 func (d *DictionaryPage) IsSorted() bool { return d.sorted }
 
+// prefetchData holds the result of a prefetch operation
+type prefetchData struct {
+	header          *format.PageHeader
+	buffer          *memory.Buffer
+	lenCompressed   int
+	lenUncompressed int
+	err             error
+}
+
+func (prefetch *prefetchData) Reset() {
+	prefetch.header = nil
+	prefetch.err = nil
+	prefetch.lenCompressed = 0
+	prefetch.lenUncompressed = 0
+}
+
+type WorkerPool interface {
+	Submit(task func())
+}
+
 type serializedPageReader struct {
 	r             parquet.BufferedReader
 	chunk         *metadata.ColumnChunkMetaData
@@ -371,29 +395,60 @@ type serializedPageReader struct {
 
 	baseOffset, dataOffset, dictOffset int64
 
-	decompressBuffer *memory.Buffer
-	dataPageBuffer   *memory.Buffer
-	dictPageBuffer   *memory.Buffer
-	err              error
+	dataPageBuffer *memory.Buffer
+	dictPageBuffer *memory.Buffer
+	err            error
+
+	// Prefetch related fields
+	workerPool      *errgroup.Group
+	prefetchEnabled bool
+	prefetched      chan *prefetchData
+	prefetchQueue   chan *prefetchData
+	prefetchWg      sync.WaitGroup
 }
 
 func (p *serializedPageReader) Close() error {
-	if p.decompressBuffer != nil {
-		p.decompressBuffer.Release()
+	if p.dictPageBuffer != nil {
 		p.dictPageBuffer.Release()
 		p.dataPageBuffer.Release()
 	}
+
+	if p.prefetchEnabled {
+		p.prefetchWg.Wait()
+	}
+	close(p.prefetchQueue)
+	close(p.prefetched)
+	for d := range p.prefetchQueue {
+		d.buffer.Release()
+	}
+	for d := range p.prefetched {
+		d.buffer.Release()
+	}
+
 	return nil
+}
+
+func (p *serializedPageReader) SetWorkerPool(pool *errgroup.Group) {
+	if pool != nil {
+		p.workerPool = pool
+		p.prefetchEnabled = true
+		p.submitPrefetchTask()
+	}
 }
 
 func (p *serializedPageReader) init(compressType compress.Compression, ctx *CryptoContext) error {
 	if p.mem == nil {
 		p.mem = memory.NewGoAllocator()
 	}
-	p.decompressBuffer = memory.NewResizableBuffer(p.mem)
 	p.dataPageBuffer = memory.NewResizableBuffer(p.mem)
 	p.dictPageBuffer = memory.NewResizableBuffer(p.mem)
-	p.decompressBuffer.ResizeNoShrink(defaultPageHeaderSize)
+	p.prefetched = make(chan *prefetchData, PrefetchSize)
+	p.prefetchQueue = make(chan *prefetchData, PrefetchSize)
+	for range PrefetchSize {
+		buf := memory.NewResizableBuffer(p.mem)
+		buf.ResizeNoShrink(defaultPageHeaderSize)
+		p.prefetchQueue <- &prefetchData{buffer: buf}
+	}
 
 	codec, err := compress.GetCodec(compressType)
 	if err != nil {
@@ -437,11 +492,9 @@ func NewPageReader(r parquet.BufferedReader, nrows int64, compressType compress.
 		mem:               mem,
 		codec:             codec,
 
-		decompressBuffer: memory.NewResizableBuffer(mem),
-		dataPageBuffer:   memory.NewResizableBuffer(mem),
-		dictPageBuffer:   memory.NewResizableBuffer(mem),
+		dataPageBuffer: memory.NewResizableBuffer(mem),
+		dictPageBuffer: memory.NewResizableBuffer(mem),
 	}
-	rdr.decompressBuffer.ResizeNoShrink(defaultPageHeaderSize)
 	if ctx != nil {
 		rdr.cryptoCtx = *ctx
 		rdr.initDecryption()
@@ -501,18 +554,218 @@ func (p *serializedPageReader) Page() Page {
 }
 
 func (p *serializedPageReader) decompress(rd io.Reader, lenCompressed int, buf []byte) ([]byte, error) {
-	p.decompressBuffer.ResizeNoShrink(lenCompressed)
-	b := bytes.NewBuffer(p.decompressBuffer.Bytes()[:0])
+	temp := make([]byte, lenCompressed)
+	b := bytes.NewBuffer(temp[:0])
 	if _, err := io.CopyN(b, rd, int64(lenCompressed)); err != nil {
 		return nil, err
 	}
 
-	data := p.decompressBuffer.Bytes()
+	data := buf
 	if p.cryptoCtx.DataDecryptor != nil {
-		data = p.cryptoCtx.DataDecryptor.Decrypt(p.decompressBuffer.Bytes())
+		data = p.cryptoCtx.DataDecryptor.Decrypt(buf)
 	}
 
 	return p.codec.Decode(buf, data), nil
+}
+
+func (p *serializedPageReader) decompressFromBytes(compressedData *memory.Buffer, buf []byte) ([]byte, error) {
+	data := compressedData.Bytes()
+	if p.cryptoCtx.DataDecryptor != nil {
+		data = p.cryptoCtx.DataDecryptor.Decrypt(compressedData.Bytes())
+	}
+
+	return p.codec.Decode(buf, data), nil
+}
+
+func (p *serializedPageReader) submitPrefetchTask() {
+	p.prefetchWg.Add(1)
+	p.workerPool.Go(func() error {
+		defer p.prefetchWg.Done()
+		p.readNextPageData()
+		return nil
+	})
+}
+
+func (p *serializedPageReader) readNextPageData() {
+	result, ok := <-p.prefetchQueue
+	if !ok {
+		return
+	}
+
+	defer func() {
+		p.prefetched <- result
+	}()
+
+	header := format.NewPageHeader()
+	if result.err = p.readPageHeader(p.r, header); result.err != nil {
+		return
+	}
+
+	lenCompressed := int(header.GetCompressedPageSize())
+	lenUncompressed := int(header.GetUncompressedPageSize())
+	if lenCompressed < 0 || lenUncompressed < 0 {
+		result.err = errors.New("parquet: invalid page header")
+		return
+	}
+
+	readLength := lenCompressed
+	if header.GetType() == format.PageType_DATA_PAGE_V2 && !header.GetDataPageHeaderV2().GetIsCompressed() {
+		readLength = lenUncompressed
+	}
+
+	result.buffer.ResizeNoShrink(readLength)
+	if _, result.err = io.ReadFull(p.r, result.buffer.Bytes()); result.err != nil {
+		return
+	}
+
+	result.header = header
+	result.lenCompressed = lenCompressed
+	result.lenUncompressed = lenUncompressed
+}
+
+func (p *serializedPageReader) processPageData(data *prefetchData) bool {
+	p.curPageHdr = data.header
+	lenUncompressed := data.lenUncompressed
+
+	if p.cryptoCtx.DataDecryptor != nil {
+		p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)
+	}
+
+	switch p.curPageHdr.GetType() {
+	case format.PageType_DICTIONARY_PAGE:
+		p.cryptoCtx.StartDecryptWithDictionaryPage = false
+		dictHeader := p.curPageHdr.GetDictionaryPageHeader()
+		if dictHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		p.dictPageBuffer.ResizeNoShrink(lenUncompressed)
+		buf := memory.NewBufferBytes(p.dictPageBuffer.Bytes())
+
+		decompressedData, err := p.decompressFromBytes(data.buffer, buf.Bytes())
+		if err != nil {
+			p.err = err
+			return false
+		}
+		if len(decompressedData) != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed dictionary page, got %d bytes", lenUncompressed, len(decompressedData))
+			return false
+		}
+
+		// make dictionary page
+		p.curPage = &DictionaryPage{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dictHeader.GetNumValues(),
+				encoding: dictHeader.GetEncoding(),
+			},
+			sorted: dictHeader.IsSetIsSorted() && dictHeader.GetIsSorted(),
+		}
+
+	case format.PageType_DATA_PAGE:
+		p.pageOrd++
+		dataHeader := p.curPageHdr.GetDataPageHeader()
+		if dataHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
+		buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
+
+		firstRowIdx := p.rowsSeen
+		p.rowsSeen += int64(dataHeader.GetNumValues())
+		decompressedData, err := p.decompressFromBytes(data.buffer, buf.Bytes())
+		if err != nil {
+			p.err = err
+			return false
+		}
+		if len(decompressedData) != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, len(decompressedData))
+			return false
+		}
+
+		// make datapagev1
+		p.curPage = &DataPageV1{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dataHeader.GetNumValues(),
+				encoding: dataHeader.GetEncoding(),
+			},
+			defLvlEncoding:   dataHeader.GetDefinitionLevelEncoding(),
+			repLvlEncoding:   dataHeader.GetRepetitionLevelEncoding(),
+			uncompressedSize: int32(lenUncompressed),
+			statistics:       extractStats(dataHeader),
+			firstRowIndex:    firstRowIdx,
+		}
+	case format.PageType_DATA_PAGE_V2:
+		p.pageOrd++
+		dataHeader := p.curPageHdr.GetDataPageHeaderV2()
+		if dataHeader.GetNumValues() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative number of values)")
+			return false
+		}
+
+		if dataHeader.GetDefinitionLevelsByteLength() < 0 || dataHeader.GetRepetitionLevelsByteLength() < 0 {
+			p.err = xerrors.New("parquet: invalid page header (negative levels byte length)")
+			return false
+		}
+
+		compressed := dataHeader.GetIsCompressed()
+		// extract stats
+		firstRowIdx := p.rowsSeen
+		p.rowsSeen += int64(dataHeader.GetNumRows())
+		levelsBytelen, ok := utils.Add(int(dataHeader.GetDefinitionLevelsByteLength()), int(dataHeader.GetRepetitionLevelsByteLength()))
+		if !ok {
+			p.err = xerrors.New("parquet: levels size too large (corrupt file?)")
+			return false
+		}
+
+		if compressed {
+			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
+			from := data.buffer.Bytes()
+			to := p.dataPageBuffer.Bytes()
+			copy(to[:levelsBytelen], from[:levelsBytelen])
+			remainData := memory.NewBufferBytes(from[levelsBytelen:])
+			if _, p.err = p.decompressFromBytes(remainData, to[levelsBytelen:]); p.err != nil {
+				return false
+			}
+		} else {
+			// Just swap the buffers
+			data.buffer, p.dataPageBuffer = p.dataPageBuffer, data.buffer
+		}
+
+		buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
+		if buf.Len() != lenUncompressed {
+			p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, buf.Len())
+			return false
+		}
+
+		// make datapage v2
+		p.curPage = &DataPageV2{
+			page: page{
+				buf:      buf,
+				typ:      p.curPageHdr.Type,
+				nvals:    dataHeader.GetNumValues(),
+				encoding: dataHeader.GetEncoding(),
+			},
+			nulls:            dataHeader.GetNumNulls(),
+			nrows:            dataHeader.GetNumRows(),
+			defLvlByteLen:    dataHeader.GetDefinitionLevelsByteLength(),
+			repLvlByteLen:    dataHeader.GetRepetitionLevelsByteLength(),
+			compressed:       compressed,
+			uncompressedSize: int32(lenUncompressed),
+			statistics:       extractStats(dataHeader),
+			firstRowIndex:    firstRowIdx,
+		}
+	default:
+		return false
+	}
+
+	return true
 }
 
 type dataheader interface {
@@ -693,164 +946,34 @@ func (p *serializedPageReader) Next() bool {
 		p.curPage.Release()
 	}
 	p.curPage = nil
-	p.curPageHdr = format.NewPageHeader()
 	p.err = nil
 
 	for p.rowsSeen < p.nrows {
-		if err := p.readPageHeader(p.r, p.curPageHdr); err != nil {
-			if err != io.EOF {
-				p.err = err
-			}
+		if !p.prefetchEnabled {
+			p.readNextPageData()
+		}
 
+		pageData := <-p.prefetched
+		if pageData.err != nil {
+			if pageData.err != io.EOF {
+				p.err = pageData.err
+			}
+			// Put the buffer back to make it released in Close
+			p.prefetchQueue <- pageData
 			return false
 		}
 
-		lenCompressed := int(p.curPageHdr.GetCompressedPageSize())
-		lenUncompressed := int(p.curPageHdr.GetUncompressedPageSize())
-		if lenCompressed < 0 || lenUncompressed < 0 {
-			p.err = errors.New("parquet: invalid page header")
+		if p.prefetchEnabled {
+			p.submitPrefetchTask()
+		}
+
+		got := p.processPageData(pageData)
+		p.prefetchQueue <- pageData
+		if got {
+			return true
+		} else if p.err != nil {
 			return false
 		}
-
-		if p.cryptoCtx.DataDecryptor != nil {
-			p.updateDecryption(p.cryptoCtx.DataDecryptor, encryption.DictPageModule, p.dataPageAad)
-		}
-
-		switch p.curPageHdr.GetType() {
-		case format.PageType_DICTIONARY_PAGE:
-			p.cryptoCtx.StartDecryptWithDictionaryPage = false
-			dictHeader := p.curPageHdr.GetDictionaryPageHeader()
-			if dictHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			p.dictPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dictPageBuffer.Bytes())
-
-			data, err := p.decompress(p.r, lenCompressed, buf.Bytes())
-			if err != nil {
-				p.err = err
-				return false
-			}
-			if len(data) != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed dictionary page, got %d bytes", lenUncompressed, len(data))
-				return false
-			}
-
-			// make dictionary page
-			p.curPage = &DictionaryPage{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dictHeader.GetNumValues(),
-					encoding: dictHeader.GetEncoding(),
-				},
-				sorted: dictHeader.IsSetIsSorted() && dictHeader.GetIsSorted(),
-			}
-
-		case format.PageType_DATA_PAGE:
-			p.pageOrd++
-			dataHeader := p.curPageHdr.GetDataPageHeader()
-			if dataHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
-
-			firstRowIdx := p.rowsSeen
-			p.rowsSeen += int64(dataHeader.GetNumValues())
-			data, err := p.decompress(p.r, lenCompressed, buf.Bytes())
-			if err != nil {
-				p.err = err
-				return false
-			}
-			if len(data) != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, len(data))
-				return false
-			}
-
-			// make datapagev1
-			p.curPage = &DataPageV1{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dataHeader.GetNumValues(),
-					encoding: dataHeader.GetEncoding(),
-				},
-				defLvlEncoding:   dataHeader.GetDefinitionLevelEncoding(),
-				repLvlEncoding:   dataHeader.GetRepetitionLevelEncoding(),
-				uncompressedSize: int32(lenUncompressed),
-				statistics:       extractStats(dataHeader),
-				firstRowIndex:    firstRowIdx,
-			}
-		case format.PageType_DATA_PAGE_V2:
-			p.pageOrd++
-			dataHeader := p.curPageHdr.GetDataPageHeaderV2()
-			if dataHeader.GetNumValues() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative number of values)")
-				return false
-			}
-
-			if dataHeader.GetDefinitionLevelsByteLength() < 0 || dataHeader.GetRepetitionLevelsByteLength() < 0 {
-				p.err = xerrors.New("parquet: invalid page header (negative levels byte length)")
-				return false
-			}
-
-			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
-
-			compressed := dataHeader.GetIsCompressed()
-			// extract stats
-			firstRowIdx := p.rowsSeen
-			p.rowsSeen += int64(dataHeader.GetNumRows())
-			levelsBytelen, ok := utils.Add(int(dataHeader.GetDefinitionLevelsByteLength()), int(dataHeader.GetRepetitionLevelsByteLength()))
-			if !ok {
-				p.err = xerrors.New("parquet: levels size too large (corrupt file?)")
-				return false
-			}
-
-			if compressed {
-				if levelsBytelen > 0 {
-					io.ReadFull(p.r, buf.Bytes()[:levelsBytelen])
-				}
-				if _, p.err = p.decompress(p.r, lenCompressed-levelsBytelen, buf.Bytes()[levelsBytelen:]); p.err != nil {
-					return false
-				}
-			} else {
-				io.ReadFull(p.r, buf.Bytes())
-			}
-
-			if buf.Len() != lenUncompressed {
-				p.err = fmt.Errorf("parquet: metadata said %d bytes uncompressed data page, got %d bytes", lenUncompressed, buf.Len())
-				return false
-			}
-
-			// make datapage v2
-			p.curPage = &DataPageV2{
-				page: page{
-					buf:      buf,
-					typ:      p.curPageHdr.Type,
-					nvals:    dataHeader.GetNumValues(),
-					encoding: dataHeader.GetEncoding(),
-				},
-				nulls:            dataHeader.GetNumNulls(),
-				nrows:            dataHeader.GetNumRows(),
-				defLvlByteLen:    dataHeader.GetDefinitionLevelsByteLength(),
-				repLvlByteLen:    dataHeader.GetRepetitionLevelsByteLength(),
-				compressed:       compressed,
-				uncompressedSize: int32(lenUncompressed),
-				statistics:       extractStats(dataHeader),
-				firstRowIndex:    firstRowIdx,
-			}
-		default:
-			// we don't know this page type, we're allowed to skip non-data pages
-			continue
-		}
-
-		return true
 	}
 
 	return false

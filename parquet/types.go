@@ -57,6 +57,17 @@ type ReaderAtSeeker interface {
 	io.Seeker
 }
 
+// ReaderAtSeekerOpener extends ReaderAtSeeker with an Open method.
+type ReaderAtSeekerOpener interface {
+	io.ReaderAt
+	io.Seeker
+	Open() (ReaderAtSeekerOpener, error)
+}
+
+type CloseFunc func() error
+
+var NoopCloseFunc = func() error { return nil }
+
 // NewInt96 creates a new Int96 from the given 3 uint32 values.
 func NewInt96(v [3]uint32) (out Int96) {
 	binary.LittleEndian.PutUint32(out[0:], v[0])

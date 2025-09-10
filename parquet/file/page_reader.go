@@ -375,6 +375,7 @@ type WorkerPool interface {
 
 type serializedPageReader struct {
 	r             parquet.BufferedReader
+	closeFunc     func() error
 	chunk         *metadata.ColumnChunkMetaData
 	colIdx        int
 	pgIndexReader *metadata.RowGroupPageIndexReader
@@ -425,6 +426,9 @@ func (p *serializedPageReader) Close() error {
 		d.buffer.Release()
 	}
 
+	if p.closeFunc != nil {
+		return p.closeFunc()
+	}
 	return nil
 }
 

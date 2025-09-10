@@ -18,6 +18,7 @@ package file
 
 import (
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/internal/utils"
@@ -119,8 +120,14 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 		colLen += padding
 	}
 
-	stream, err := r.props.GetStream(r.r, colStart, colLen)
+	baseReader, closeFunc, err := getReader(r.r)
 	if err != nil {
+		return nil, err
+	}
+
+	stream, err := r.props.GetStream(baseReader, colStart, colLen)
+	if err != nil {
+		closeFunc()
 		return nil, err
 	}
 
@@ -128,6 +135,7 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 	if cryptoMetadata == nil {
 		pr := &serializedPageReader{
 			r:                 stream,
+			closeFunc:         closeFunc,
 			chunk:             col,
 			colIdx:            i,
 			pgIndexReader:     rgIdxRdr,
@@ -190,4 +198,24 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 		cryptoCtx:         ctx,
 	}
 	return pr, pr.init(col.Compression(), &ctx)
+}
+
+func getReader(r parquet.ReaderAtSeeker) (parquet.ReaderAtSeeker, parquet.CloseFunc, error) {
+	closeFunc := parquet.NoopCloseFunc
+	raos, ok := r.(parquet.ReaderAtSeekerOpener)
+	if !ok {
+		return r, closeFunc, nil
+	}
+
+	newReader, err := raos.Open()
+	if err != nil {
+		return r, closeFunc, err
+	}
+
+	if closer, ok := newReader.(io.Closer); ok {
+		closeFunc = func() error {
+			return closer.Close()
+		}
+	}
+	return newReader, closeFunc, nil
 }

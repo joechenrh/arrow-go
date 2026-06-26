@@ -124,11 +124,13 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 		pr := &serializedPageReader{
 			r:                 stream,
 			chunk:             col,
+			descr:             r.fileMetadata.Schema.Column(i),
 			colIdx:            i,
 			pgIndexReader:     rgIdxRdr,
 			maxPageHeaderSize: defaultMaxPageHeaderSize,
 			nrows:             col.NumValues(),
 			mem:               r.props.Allocator(),
+			pageReadStrategy:  r.props.PageReadStrategy,
 		}
 		return pr, pr.init(col.Compression(), nil)
 	}
@@ -153,12 +155,14 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 		pr := &serializedPageReader{
 			r:                 stream,
 			chunk:             col,
+			descr:             r.fileMetadata.Schema.Column(i),
 			colIdx:            i,
 			pgIndexReader:     rgIdxRdr,
 			maxPageHeaderSize: defaultMaxPageHeaderSize,
 			nrows:             col.NumValues(),
 			mem:               r.props.Allocator(),
 			cryptoCtx:         ctx,
+			pageReadStrategy:  r.props.PageReadStrategy,
 		}
 		return pr, pr.init(col.Compression(), &ctx)
 	}
@@ -177,12 +181,14 @@ func (r *RowGroupReader) GetColumnPageReader(i int) (PageReader, error) {
 	pr := &serializedPageReader{
 		r:                 stream,
 		chunk:             col,
+		descr:             r.fileMetadata.Schema.Column(i),
 		colIdx:            i,
 		pgIndexReader:     rgIdxRdr,
 		maxPageHeaderSize: defaultMaxPageHeaderSize,
 		nrows:             col.NumValues(),
 		mem:               r.props.Allocator(),
 		cryptoCtx:         ctx,
+		pageReadStrategy:  r.props.PageReadStrategy,
 	}
 	return pr, pr.init(col.Compression(), &ctx)
 }

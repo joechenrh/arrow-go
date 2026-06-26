@@ -179,6 +179,8 @@ type (
 	DataPageVersion int8
 	// Encoding is the parquet Encoding type
 	Encoding format.Encoding
+	// CompressionCodec is the parquet compression codec type.
+	CompressionCodec format.CompressionCodec
 	// Repetition is the underlying parquet field repetition type as in parquet.thrift
 	Repetition format.FieldRepetitionType
 	// ColumnPath is the path from the root of the schema to a given column

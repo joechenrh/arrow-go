@@ -17,8 +17,11 @@
 package file
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"math/bits"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -354,8 +357,14 @@ func (c *columnChunkReader) processPage() (bool, error) {
 	case *DictionaryPage:
 		return false, c.configureDict(p)
 	case *DataPageV1:
+		if p.payload != nil && c.canStreamPlainPage() {
+			return true, c.initStreamingDataPageV1(p)
+		}
 		lvlByteLen, err = c.initLevelDecodersV1(p, p.repLvlEncoding, p.defLvlEncoding)
 	case *DataPageV2:
+		if p.payload != nil && c.canStreamPlainPage() {
+			return true, c.initStreamingDataPageV2(p)
+		}
 		lvlByteLen, err = c.initLevelDecodersV2(p)
 	default:
 		// we can skip non-data pages
@@ -367,6 +376,17 @@ func (c *columnChunkReader) processPage() (bool, error) {
 	}
 
 	return true, c.initDataDecoder(c.curPage, lvlByteLen)
+}
+
+func (c *columnChunkReader) canStreamPlainPage() bool {
+	switch c.descr.PhysicalType() {
+	case parquet.Types.Int32, parquet.Types.Int64, parquet.Types.Int96,
+		parquet.Types.Float, parquet.Types.Double,
+		parquet.Types.ByteArray, parquet.Types.FixedLenByteArray:
+		return true
+	default:
+		return false
+	}
 }
 
 // read a new page from the page reader
@@ -454,6 +474,140 @@ func (c *columnChunkReader) initLevelDecodersV1(page *DataPageV1, repLvlEncoding
 	}
 
 	return levelsByteLen, nil
+}
+
+func (c *columnChunkReader) initStreamingDataPageV1(page *DataPageV1) error {
+	c.numBuffered = int64(page.nvals)
+	c.numDecoded = 0
+
+	r := page.uncompressedBodyReader()
+	if c.descr.MaxRepetitionLevel() > 0 {
+		repData, err := readStreamingLevelData(r, parquet.Encoding(page.repLvlEncoding),
+			c.descr.MaxRepetitionLevel(), int(c.numBuffered))
+		if err != nil {
+			return err
+		}
+		if _, err := c.repetitionDecoder.SetData(parquet.Encoding(page.repLvlEncoding),
+			c.descr.MaxRepetitionLevel(), int(c.numBuffered), repData); err != nil {
+			return err
+		}
+		if c.repLvlBuffer != nil {
+			c.repLvlBuffer = c.repLvlBuffer[:0]
+		}
+	}
+
+	if c.descr.MaxDefinitionLevel() > 0 {
+		defData, err := readStreamingLevelData(r, parquet.Encoding(page.defLvlEncoding),
+			c.descr.MaxDefinitionLevel(), int(c.numBuffered))
+		if err != nil {
+			return err
+		}
+		if _, err := c.definitionDecoder.SetData(parquet.Encoding(page.defLvlEncoding),
+			c.descr.MaxDefinitionLevel(), int(c.numBuffered), defData); err != nil {
+			return err
+		}
+	}
+
+	return c.initStreamingDataDecoder(r, int(c.numBuffered))
+}
+
+func (c *columnChunkReader) initStreamingDataPageV2(page *DataPageV2) error {
+	c.numBuffered = int64(page.nvals)
+	c.numDecoded = 0
+
+	if err := c.initStreamingLevelDecoderV2(&c.repetitionDecoder, page.payload.compressed,
+		page.repLvlByteLen, c.descr.MaxRepetitionLevel()); err != nil {
+		return err
+	}
+	if c.repLvlBuffer != nil {
+		c.repLvlBuffer = c.repLvlBuffer[:0]
+	}
+
+	if err := c.initStreamingLevelDecoderV2(&c.definitionDecoder, page.payload.compressed,
+		page.defLvlByteLen, c.descr.MaxDefinitionLevel()); err != nil {
+		return err
+	}
+
+	return c.initStreamingDataDecoder(page.valuesReader(), int(c.numBuffered))
+}
+
+func (c *columnChunkReader) initStreamingLevelDecoderV2(dec *encoding.LevelDecoder, r io.Reader, nbytes int32, maxLevel int16) error {
+	if nbytes < 0 {
+		return errors.New("parquet: invalid page header (corrupt data page?)")
+	}
+	if nbytes == 0 {
+		return nil
+	}
+
+	data := make([]byte, int(nbytes))
+	if _, err := io.ReadFull(r, data); err != nil {
+		return err
+	}
+	if maxLevel == 0 {
+		return nil
+	}
+	return dec.SetDataV2(nbytes, maxLevel, int(c.numBuffered), data)
+}
+
+func (c *columnChunkReader) initStreamingDataDecoder(r io.Reader, nvals int) error {
+	c.curEncoding = format.Encoding_PLAIN
+	switch c.descr.PhysicalType() {
+	case parquet.Types.Int32:
+		c.curDecoder = &streamingPlainDecoder[int32]{r: r, nvals: nvals, typ: parquet.Types.Int32}
+	case parquet.Types.Int64:
+		c.curDecoder = &streamingPlainDecoder[int64]{r: r, nvals: nvals, typ: parquet.Types.Int64}
+	case parquet.Types.Int96:
+		c.curDecoder = &streamingPlainDecoder[parquet.Int96]{r: r, nvals: nvals, typ: parquet.Types.Int96}
+	case parquet.Types.Float:
+		c.curDecoder = &streamingPlainDecoder[float32]{r: r, nvals: nvals, typ: parquet.Types.Float}
+	case parquet.Types.Double:
+		c.curDecoder = &streamingPlainDecoder[float64]{r: r, nvals: nvals, typ: parquet.Types.Double}
+	case parquet.Types.ByteArray:
+		c.curDecoder = &streamingPlainByteArrayDecoder{r: r, nvals: nvals}
+	case parquet.Types.FixedLenByteArray:
+		c.curDecoder = &streamingPlainFixedLenByteArrayDecoder{
+			r:       r,
+			nvals:   nvals,
+			typeLen: int(c.descr.TypeLength()),
+		}
+	default:
+		return fmt.Errorf("parquet: unsupported streaming plain type %s", c.descr.PhysicalType())
+	}
+	return nil
+}
+
+func readStreamingLevelData(r io.Reader, enc parquet.Encoding, maxLevel int16, nbuffered int) ([]byte, error) {
+	switch enc {
+	case parquet.Encodings.RLE:
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			return nil, err
+		}
+		nbytes := int32(binary.LittleEndian.Uint32(lenBuf[:]))
+		if nbytes < 0 {
+			return nil, errors.New("parquet: received invalid number of bytes (corrupt data page?)")
+		}
+		data := make([]byte, int(nbytes)+4)
+		copy(data, lenBuf[:])
+		if _, err := io.ReadFull(r, data[4:]); err != nil {
+			return nil, err
+		}
+		return data, nil
+	case parquet.Encodings.BitPacked:
+		bitWidth := bits.Len64(uint64(maxLevel))
+		nbits, ok := utils.Mul(nbuffered, bitWidth)
+		if !ok {
+			return nil, errors.New("parquet: number of buffered values too large (corrupt data page?)")
+		}
+		nbytes := (nbits + 7) / 8
+		data := make([]byte, nbytes)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return nil, err
+		}
+		return data, nil
+	default:
+		return nil, fmt.Errorf("parquet: unknown encoding type for levels '%s'", enc)
+	}
 }
 
 func (c *columnChunkReader) initDataDecoder(page Page, lvlByteLen int64) error {

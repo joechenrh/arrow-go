@@ -21,18 +21,29 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/apache/arrow-go/v18/parquet/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type countingPageReadStrategy struct {
+	calls atomic.Int64
+}
+
+func (s *countingPageReadStrategy) UseAlternatePageRead(ctx parquet.PageReadContext) bool {
+	s.calls.Add(1)
+	return (parquet.DefaultPageReadStrategy{}).UseAlternatePageRead(ctx)
+}
 
 // TestLargeByteArrayValuesDoNotOverflowInt32 tests that writing large byte array
 // values totalling over 1GB in a single WriteBatch call triggers adaptive batch
@@ -87,6 +98,88 @@ func TestLargeByteArrayValuesDoNotOverflowInt32(t *testing.T) {
 	assert.NoError(t, rgw.Close())
 	assert.NoError(t, writer.Close())
 	assert.Greater(t, out.Len(), 0)
+}
+
+func TestLargePlainByteArrayPageReadDoesNotAllocateFullPage(t *testing.T) {
+	for _, pageVersion := range []parquet.DataPageVersion{parquet.DataPageV1, parquet.DataPageV2} {
+		for _, codec := range []compress.Compression{
+			compress.Codecs.Uncompressed,
+			compress.Codecs.Gzip,
+			compress.Codecs.Brotli,
+			compress.Codecs.Zstd,
+		} {
+			t.Run(fmt.Sprintf("version=%d/codec=%s", pageVersion+1, codec), func(t *testing.T) {
+				sc := schema.NewSchema(schema.MustGroup(schema.NewGroupNode("schema", parquet.Repetitions.Required, schema.FieldList{
+					schema.Must(schema.NewPrimitiveNode("large_data", parquet.Repetitions.Optional, parquet.Types.ByteArray, -1, -1)),
+				}, -1)))
+
+				out := &bytes.Buffer{}
+				props := parquet.NewWriterProperties(
+					parquet.WithStats(false),
+					parquet.WithCompression(codec),
+					parquet.WithDataPageVersion(pageVersion),
+					parquet.WithDictionaryDefault(false),
+					parquet.WithDataPageSize(64*1024*1024),
+				)
+
+				writer := file.NewParquetWriter(out, sc.Root(), file.WithWriterProps(props))
+				rgw := writer.AppendRowGroup()
+				colWriter, err := rgw.NextColumn()
+				require.NoError(t, err)
+
+				const (
+					numValues = 8
+					valueSize = 256 * 1024
+				)
+				values := make([]parquet.ByteArray, numValues)
+				defLevels := make([]int16, numValues)
+				for i := range values {
+					value := make([]byte, valueSize)
+					value[0] = byte(i)
+					value[len(value)-1] = byte(255 - i)
+					values[i] = value
+					defLevels[i] = 1
+				}
+
+				_, err = colWriter.(*file.ByteArrayColumnChunkWriter).WriteBatch(values, defLevels, nil)
+				require.NoError(t, err)
+				require.NoError(t, colWriter.Close())
+				require.NoError(t, rgw.Close())
+				require.NoError(t, writer.Close())
+
+				mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+				readProps := parquet.NewReaderProperties(mem)
+				readProps.BufferedStreamEnabled = true
+				readProps.BufferSize = 1024
+				strategy := &countingPageReadStrategy{}
+				readProps.PageReadStrategy = strategy
+
+				reader, err := file.NewParquetReader(bytes.NewReader(out.Bytes()), file.WithReadProps(readProps))
+				require.NoError(t, err)
+				defer reader.Close()
+
+				colReader, err := reader.RowGroup(0).Column(0)
+				require.NoError(t, err)
+				defer func() {
+					require.NoError(t, colReader.Close())
+					mem.AssertSize(t, 0)
+				}()
+
+				byteArrayReader := colReader.(*file.ByteArrayColumnChunkReader)
+				readValues := make([]parquet.ByteArray, 1)
+				readDefLevels := make([]int16, 1)
+				total, valuesRead, err := byteArrayReader.ReadBatchInPage(1, readValues, readDefLevels, nil)
+				require.NoError(t, err)
+				require.EqualValues(t, 1, total)
+				require.Equal(t, 1, valuesRead)
+				require.Equal(t, values[0], readValues[0])
+				require.Greater(t, strategy.calls.Load(), int64(0))
+
+				require.Less(t, mem.CurrentAlloc(), valueSize,
+					"reader allocated memory close to the full uncompressed page")
+			})
+		}
+	}
 }
 
 // TestLargeStringArrayWithArrow tests the pqarrow integration path with large values.

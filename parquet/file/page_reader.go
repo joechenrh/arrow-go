@@ -31,6 +31,7 @@ import (
 	format "github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet"
 	"github.com/apache/arrow-go/v18/parquet/internal/thrift"
 	"github.com/apache/arrow-go/v18/parquet/metadata"
+	"github.com/apache/arrow-go/v18/parquet/schema"
 )
 
 // PageReader is the interface used by the columnreader in order to read
@@ -141,6 +142,9 @@ type DataPageV1 struct {
 	statistics       metadata.EncodedStatistics
 	firstRowIndex    int64
 	sizeStatistics   SizeStatistics
+
+	payload *pagePayloadReader
+	mem     memory.Allocator
 }
 
 // NewDataPageV1 returns a V1 data page with the given buffer as its data and the specified encoding information
@@ -168,6 +172,8 @@ func NewDataPageV1(buffer *memory.Buffer, num int32, encoding, defEncoding, repE
 	dp.uncompressedSize = uncompressedSize
 	dp.firstRowIndex = -1
 	dp.sizeStatistics = SizeStatistics{}
+	dp.payload = nil
+	dp.mem = nil
 	return dp
 }
 
@@ -191,9 +197,34 @@ func NewDataPageV1WithConfig(buffer *memory.Buffer, defEncoding, repEncoding par
 // After calling this function, the object should not be utilized anymore, otherwise
 // conflicts can arise.
 func (d *DataPageV1) Release() {
-	d.buf.Release()
-	d.buf = nil
+	if d.buf != nil {
+		d.buf.Release()
+		d.buf = nil
+	}
+	if d.payload != nil {
+		d.payload.close()
+		d.payload = nil
+	}
+	d.mem = nil
 	dataPageV1Pool.Put(d)
+}
+
+func (d *DataPageV1) Data() []byte {
+	if d.payload != nil && d.buf == nil {
+		d.buf = memory.NewResizableBuffer(d.mem)
+		d.buf.ResizeNoShrink(int(d.uncompressedSize))
+		_, err := io.ReadFull(d.payload.uncompressedReader(), d.buf.Bytes())
+		if err != nil {
+			panic(err)
+		}
+		d.payload.close()
+		d.payload = nil
+	}
+	return d.page.Data()
+}
+
+func (d *DataPageV1) uncompressedBodyReader() io.Reader {
+	return d.payload.uncompressedReader()
 }
 
 func (d *DataPageV1) FirstRowIndex() int64 { return d.firstRowIndex }
@@ -227,6 +258,9 @@ type DataPageV2 struct {
 	statistics       metadata.EncodedStatistics
 	firstRowIndex    int64
 	sizeStatistics   SizeStatistics
+
+	payload *pagePayloadReader
+	mem     memory.Allocator
 }
 
 // NewDataPageV2 constructs a new V2 data page with the provided information and a buffer of the raw data.
@@ -254,6 +288,8 @@ func NewDataPageV2(buffer *memory.Buffer, numValues, numNulls, numRows int32, en
 	dp.statistics.HasNullCount, dp.statistics.HasDistinctCount = false, false
 	dp.firstRowIndex = -1
 	dp.sizeStatistics = SizeStatistics{}
+	dp.payload = nil
+	dp.mem = nil
 	return dp
 }
 
@@ -277,9 +313,45 @@ func NewDataPageV2WithConfig(buffer *memory.Buffer, numNulls, numRows int32, def
 // After calling this function, the object should not be utilized anymore, otherwise
 // conflicts can arise.
 func (d *DataPageV2) Release() {
-	d.buf.Release()
-	d.buf = nil
+	if d.buf != nil {
+		d.buf.Release()
+		d.buf = nil
+	}
+	if d.payload != nil {
+		d.payload.close()
+		d.payload = nil
+	}
+	d.mem = nil
 	dataPageV2Pool.Put(d)
+}
+
+func (d *DataPageV2) Data() []byte {
+	if d.payload != nil && d.buf == nil {
+		d.buf = memory.NewResizableBuffer(d.mem)
+		d.buf.ResizeNoShrink(int(d.uncompressedSize))
+		buf := d.buf.Bytes()
+		levelsLen := int(d.repLvlByteLen) + int(d.defLvlByteLen)
+		if _, err := io.ReadFull(d.payload.compressed, buf[:levelsLen]); err != nil {
+			panic(err)
+		}
+		if d.compressed {
+			if _, err := io.ReadFull(d.payload.uncompressedReader(), buf[levelsLen:]); err != nil {
+				panic(err)
+			}
+		} else if _, err := io.ReadFull(d.payload.compressed, buf[levelsLen:]); err != nil {
+			panic(err)
+		}
+		d.payload.close()
+		d.payload = nil
+	}
+	return d.page.Data()
+}
+
+func (d *DataPageV2) valuesReader() io.Reader {
+	if !d.compressed {
+		return d.payload.compressed
+	}
+	return d.payload.uncompressedReader()
 }
 
 func (d *DataPageV2) FirstRowIndex() int64 { return d.firstRowIndex }
@@ -350,6 +422,7 @@ func (d *DictionaryPage) IsSorted() bool { return d.sorted }
 type serializedPageReader struct {
 	r             parquet.BufferedReader
 	chunk         *metadata.ColumnChunkMetaData
+	descr         *schema.Column
 	colIdx        int
 	pgIndexReader *metadata.RowGroupPageIndexReader
 
@@ -357,6 +430,9 @@ type serializedPageReader struct {
 	rowsSeen int64
 	mem      memory.Allocator
 	codec    compress.Codec
+
+	compression      compress.Compression
+	pageReadStrategy parquet.PageReadStrategy
 
 	curPageHdr        *format.PageHeader
 	pageOrd           int16
@@ -398,6 +474,7 @@ func (p *serializedPageReader) init(compressType compress.Compression, ctx *Cryp
 		return err
 	}
 	p.codec = codec
+	p.compression = compressType
 
 	if ctx != nil {
 		p.cryptoCtx = *ctx
@@ -434,6 +511,7 @@ func NewPageReader(r parquet.BufferedReader, nrows int64, compressType compress.
 		nrows:             nrows,
 		mem:               mem,
 		codec:             codec,
+		compression:       compressType,
 
 		decompressBuffer: memory.NewResizableBuffer(mem),
 		dataPageBuffer:   memory.NewResizableBuffer(mem),
@@ -456,6 +534,7 @@ func (p *serializedPageReader) Reset(r parquet.BufferedReader, nrows int64, comp
 	if p.err != nil {
 		return
 	}
+	p.compression = compressType
 	if ctx != nil {
 		p.cryptoCtx = *ctx
 		p.initDecryption()
@@ -496,6 +575,30 @@ func (p *serializedPageReader) updateDecryption(decrypt encryption.Decryptor, mo
 
 func (p *serializedPageReader) Page() Page {
 	return p.curPage
+}
+
+func (p *serializedPageReader) canStreamPage(ctx parquet.PageReadContext) bool {
+	if p.pageReadStrategy == nil {
+		return false
+	}
+	if p.chunk != nil {
+		ctx.PhysicalType = p.chunk.Type()
+	}
+	if p.descr != nil {
+		ctx.TypeLength = int32(p.descr.TypeLength())
+	}
+	ctx.Compression = parquet.CompressionCodec(p.compression)
+	ctx.IsEncrypted = p.cryptoCtx.DataDecryptor != nil
+	return p.pageReadStrategy.UseAlternatePageRead(ctx)
+}
+
+func (p *serializedPageReader) newPagePayloadReader(lenCompressed int) *pagePayloadReader {
+	limited := &io.LimitedReader{R: p.r, N: int64(lenCompressed)}
+	return &pagePayloadReader{
+		compressed:  limited,
+		compression: p.compression,
+		codec:       p.codec,
+	}
 }
 
 func (p *serializedPageReader) decompress(rd io.Reader, lenCompressed int, buf []byte) ([]byte, error) {
@@ -808,11 +911,34 @@ func (p *serializedPageReader) Next() bool {
 				return false
 			}
 
+			firstRowIdx := p.rowsSeen
+			p.rowsSeen += int64(dataHeader.GetNumValues())
+			if p.canStreamPage(parquet.PageReadContext{
+				PageVersion:             parquet.DataPageV1,
+				Encoding:                parquet.Encoding(dataHeader.GetEncoding()),
+				DefinitionLevelEncoding: parquet.Encoding(dataHeader.GetDefinitionLevelEncoding()),
+				RepetitionLevelEncoding: parquet.Encoding(dataHeader.GetRepetitionLevelEncoding()),
+			}) {
+				p.curPage = &DataPageV1{
+					page: page{
+						typ:      p.curPageHdr.Type,
+						nvals:    dataHeader.GetNumValues(),
+						encoding: dataHeader.GetEncoding(),
+					},
+					defLvlEncoding:   dataHeader.GetDefinitionLevelEncoding(),
+					repLvlEncoding:   dataHeader.GetRepetitionLevelEncoding(),
+					uncompressedSize: int32(lenUncompressed),
+					statistics:       extractStats(dataHeader),
+					firstRowIndex:    firstRowIdx,
+					payload:          p.newPagePayloadReader(lenCompressed),
+					mem:              p.mem,
+				}
+				return true
+			}
+
 			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
 			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
 
-			firstRowIdx := p.rowsSeen
-			p.rowsSeen += int64(dataHeader.GetNumValues())
 			data, err := p.decompress(p.r, lenCompressed, buf.Bytes())
 			if err != nil {
 				p.err = err
@@ -850,9 +976,6 @@ func (p *serializedPageReader) Next() bool {
 				return false
 			}
 
-			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
-			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
-
 			compressed := dataHeader.GetIsCompressed()
 			// extract stats
 			firstRowIdx := p.rowsSeen
@@ -862,6 +985,33 @@ func (p *serializedPageReader) Next() bool {
 				p.err = errors.New("parquet: levels size too large (corrupt file?)")
 				return false
 			}
+
+			if p.canStreamPage(parquet.PageReadContext{
+				PageVersion: parquet.DataPageV2,
+				Encoding:    parquet.Encoding(dataHeader.GetEncoding()),
+			}) {
+				p.curPage = &DataPageV2{
+					page: page{
+						typ:      p.curPageHdr.Type,
+						nvals:    dataHeader.GetNumValues(),
+						encoding: dataHeader.GetEncoding(),
+					},
+					nulls:            dataHeader.GetNumNulls(),
+					nrows:            dataHeader.GetNumRows(),
+					defLvlByteLen:    dataHeader.GetDefinitionLevelsByteLength(),
+					repLvlByteLen:    dataHeader.GetRepetitionLevelsByteLength(),
+					compressed:       compressed,
+					uncompressedSize: int32(lenUncompressed),
+					statistics:       extractStats(dataHeader),
+					firstRowIndex:    firstRowIdx,
+					payload:          p.newPagePayloadReader(lenCompressed),
+					mem:              p.mem,
+				}
+				return true
+			}
+
+			p.dataPageBuffer.ResizeNoShrink(lenUncompressed)
+			buf := memory.NewBufferBytes(p.dataPageBuffer.Bytes())
 
 			if p.cryptoCtx.DataDecryptor != nil {
 				if err := p.readV2Encrypted(p.r, lenCompressed, levelsBytelen, compressed, buf.Bytes()); err != nil {
